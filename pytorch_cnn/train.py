@@ -204,6 +204,8 @@ def evaluate(model, dataloader, criterion, device, use_tta=True):
 
 
 def main():
+    import torch.optim.swa_utils as swa_utils
+    
     parser = argparse.ArgumentParser(description="PyTorch CBAM-EfficientNet - Cats vs Dogs (Option C)")
     parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs (20 recommended for super-convergence)")
     parser.add_argument("--batch-size", type=int, default=64, help="DataLoader batch size")
@@ -213,6 +215,9 @@ def main():
     parser.add_argument("--image-size", type=int, default=224, help="Input resolution (224x224 standard)")
     parser.add_argument("--data-dir", type=str, default="data/PetImages", help="Path to Cats & Dogs folder")
     parser.add_argument("--weights-path", type=str, default="pytorch_cnn/model.pth", help="Path to save weights")
+    parser.add_argument("--swa", action="store_true", help="Enable Stochastic Weight Averaging (SWA)")
+    parser.add_argument("--swa-start", type=int, default=15, help="Epoch to start SWA (default is 15 of 20)")
+    parser.add_argument("--save-snapshots", action="store_true", help="Save snapshots of final epochs for ensembling")
     args = parser.parse_args()
     
     set_seed(args.seed)
@@ -276,6 +281,10 @@ def main():
         anneal_strategy='cos'
     )
     
+    if args.swa:
+        print("⚙️ Initializing Stochastic Weight Averaging (SWA) wrapper...")
+        swa_model = swa_utils.AveragedModel(model)
+    
     print("\n---------------------- MODEL HYPERPARAMETERS ----------------------")
     print(f"  • Device:          {device.type.upper()}")
     print(f"  • Resolution:      {args.image_size} x {args.image_size} (RGB)")
@@ -285,6 +294,10 @@ def main():
     print(f"  • Weight Decay:    {args.weight_decay}")
     print(f"  • Seed:            {args.seed}")
     print(f"  • Epochs:          {args.epochs}")
+    if args.swa:
+        print(f"  • SWA Enabled:     True (Starts at epoch {args.swa_start})")
+    if args.save_snapshots:
+        print(f"  • Snapshot Ensem.: True (Saves snapshots of final epochs)")
     print("-------------------------------------------------------------------\n")
     
     # Metric tracking
@@ -327,10 +340,38 @@ def main():
             best_test_acc = test_acc
             torch.save(model.state_dict(), args.weights_path)
             
+        # Update SWA parameters if SWA is enabled and we are in SWA phase
+        if args.swa and epoch >= args.swa_start:
+            swa_model.update_parameters(model)
+            print(f"⚙️ SWA: Averaged model weights at epoch {epoch}")
+            
+        # Save snapshots of final epochs
+        if args.save_snapshots and epoch > (args.epochs - 3):
+            snapshot_path = args.weights_path.replace(".pth", f"_epoch{epoch}.pth")
+            torch.save(model.state_dict(), snapshot_path)
+            print(f"📸 Saved snapshot checkpoint: {snapshot_path}")
+            
     print("+" + "-"*96 + "+")
     print(f"✓ Training complete! Best Validation Accuracy achieved (with TTA): {best_test_acc:.2f}%")
     print(f"✓ Model weights saved to: {args.weights_path}")
     
+    # SWA finalization
+    if args.swa:
+        print("\n⚙️ Updating Batch Normalization statistics for SWA model...")
+        swa_model = swa_model.to(device)
+        swa_utils.update_bn(train_loader, swa_model, device)
+        
+        # Evaluate SWA model
+        swa_test_loss, swa_test_acc = evaluate(swa_model, test_loader, criterion, device, use_tta=True)
+        print("+" + "-"*96 + "+")
+        print(f"🌟 SWA Model Test Loss: {swa_test_loss:.4f} | Test Acc (with TTA): {swa_test_acc:.2f}%")
+        print("+" + "-"*96 + "+")
+        
+        # Save SWA weights
+        swa_weights_path = args.weights_path.replace(".pth", "_swa.pth")
+        torch.save(swa_model.module.state_dict() if hasattr(swa_model, 'module') else swa_model.state_dict(), swa_weights_path)
+        print(f"✓ SWA model weights saved to: {swa_weights_path}")
+        
     # 4. Save Learning Curve Plots
     epochs_range = range(1, args.epochs + 1)
     plt.figure(figsize=(12, 5))
