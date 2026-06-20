@@ -21,6 +21,7 @@
 
 # Generated graphics and curves
 **/learning_curves.png
+**/calibration_reliability.png
 
 # System Files
 .DS_Store

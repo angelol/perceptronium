@@ -121,6 +121,7 @@ def main():
     parser.add_argument("--data-dir", type=str, default="data/PetImages", help="Path to Cats & Dogs folder")
     parser.add_argument("--image-size", type=int, default=224, help="Input resolution")
     parser.add_argument("--batch-size", type=int, default=64, help="Loader batch size")
+    parser.add_argument("--attention-type", type=str, default="se", choices=["se", "cbam"], help="Attention type in blocks")
     args = parser.parse_args()
     
     # 1. Device Selection
@@ -160,7 +161,7 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
     
     # 3. Load Model
-    model = CustomCNN().to(device)
+    model = CustomCNN(attention_type=args.attention_type).to(device)
     model.load_state_dict(torch.load(args.weights_path, map_location=device))
     model.eval()
     

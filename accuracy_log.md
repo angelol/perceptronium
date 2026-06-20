@@ -8,15 +8,39 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 
 | Rank | Model Identifier | Architecture Style | Total Params | Best Test Acc | Final Test Acc | Overfitting Status | Key Innovations |
 | :---: | :--- | :--- | :--- | :---: | :---: | :--- | :--- |
-| **1** | **Option A+ (Residual CNN)** | Residual feedforward CNN | ~4.91M | **87.60%** | **87.60%** | Minimal | Skip connections, RandomResizedCrop, Cosine Annealing |
-| **2** | **Option C (CBAM-EfficientNet)** | Depthwise Attention Bottleneck | ~1.28M | **84.90%** | **84.90%** | Negative (None) | CBAM Attention, MBConv stages, OneCycleLR, Mixup/CutMix |
-| **3** | **Option A (Custom CNN)** | Standard feedforward CNN | ~441K | **76.15%** | **74.50%** | Minimal | AdaptiveAvgPool, BatchNorm, Dropout |
-| **4** | **Rust CNN Baseline** | From-scratch CPU CNN | ~924K | **68.35%** | **66.90%** | Moderate | 2 Conv, 2 Pool, 1 Dense, horizontal flips in Rust |
-| **5** | **Rust MLP Baseline** | From-scratch CPU MLP | ~131K | **~50.00%** | **~50.00%** | High Bias | Fully connected nodes, no spatial representation |
+| **1** | **CBAM-EfficientNet v2 (SWA)** | Depthwise Attention Bottleneck v2 | ~8.69M | **93.30%** | **92.35%** | Minimal | Multi-block MBConv stage, Lookahead optimizer, Cosine Warm Restarts, TrivialAugment, SWA & Temperature Scaling |
+| **2** | **Option A+ (Residual CNN)** | Residual feedforward CNN | ~4.91M | **87.60%** | **87.60%** | Minimal | Skip connections, RandomResizedCrop, Cosine Annealing |
+| **3** | **Option C (CBAM-EfficientNet)** | Depthwise Attention Bottleneck | ~1.28M | **84.90%** | **84.90%** | Negative (None) | CBAM Attention, MBConv stages, OneCycleLR, Mixup/CutMix |
+| **4** | **Option A (Custom CNN)** | Standard feedforward CNN | ~441K | **76.15%** | **74.50%** | Minimal | AdaptiveAvgPool, BatchNorm, Dropout |
+| **5** | **Rust CNN Baseline** | From-scratch CPU CNN | ~924K | **68.35%** | **66.90%** | Moderate | 2 Conv, 2 Pool, 1 Dense, horizontal flips in Rust |
+| **6** | **Rust MLP Baseline** | From-scratch CPU MLP | ~131K | **~50.00%** | **~50.00%** | High Bias | Fully connected nodes, no spatial representation |
 
 ---
 
 ## 📝 Detailed Training Run Records
+
+### Run 6: CBAM-EfficientNet v2 (SWA)
+* **Date:** June 20, 2026
+* **Hardware Device:** Metal GPU (MPS)
+* **Input Resolution:** $224 \times 224$ RGB (3 channels)
+* **Architecture Highlights:**
+  - True Multi-Block Stage Repetitions (Stage 2: 2 reps, Stage 3: 3 reps, Stage 4: 3 reps, Stage 5: 2 reps) giving **7 active identity skip connections** flowing gradients cleanly.
+  - Large receptive fields ($5 \times 5$ depthwise separable convolutions) in deeper blocks (Stages 4 and 5) to capture complex local geometry.
+  - Pre-classifier $1 \times 1$ projection to 1280 channels before Global Avg Pooling, reducing the classification head to a single linear layer with Dropout of `0.3`.
+  - Stochastically regularized depth via linearly decaying DropPath (scaling $0.0 \to 0.2$).
+  - Toggled dual attention: Squeeze-and-Excitation (SE) block with reduction ratio of 4.
+* **Hyperparameters & Regularization:**
+  - **Optimizer:** Lookahead Optimizer Wrapper over `AdamW` (learning rate `8e-4`, weight decay `0.05`).
+  - **Scheduler:** `CosineAnnealingWarmRestarts` ($T_0=15$, $T_{mult}=2$), running restarts at Epoch 15 to escape suboptimal basins.
+  - **Augmentation curriculum:** `TrivialAugmentWide` + cutout-like `RandomErasing(p=0.2)`. Progressive resizing context / Wider crop scale `(0.2, 1.0)`.
+  - **Mixup & CutMix Cooldown:** Enabled Mixup/CutMix with warmup (Epochs 1-2 disabled) and active phase (Epochs 3-40 enabled). Cooldown phase (Epochs 41-45 completely disabled Mixup/CutMix) to let the model sharpen its decision boundaries.
+  - **Decoupled Label Smoothing:** $\epsilon = 0.05$ only on clean batches; mixed batches used raw mixed-target ratio.
+  - **Calibration Scaling:** Post-hoc calibration using L-BFGS temperature scaling on the validation split, finding optimal $T = 0.8088$ and lowering ECE from $4.38\%$ to $2.88\%$.
+* **Best Test Accuracy:** **`93.30%`** (Epoch 38, Peak with TTA)
+* **SWA Test Accuracy:** **`92.35%`** (with TTA, after SWA BN stabilization, SWA Test Loss: `0.2599`)
+* **Overfitting / Generalization Analysis:**
+  - **Result:** Minimal/Zero Overfitting.
+  - **Insights:** The multi-block skip connections completely resolved the training bottleneck of the prior attention bottleneck model. Lookahead and warm restarts combined with SWA allowed the weights to settle in flat minima, which generalized much better to the validation set.
 
 ### Run 5: CBAM-EfficientNet (Option C)
 * **Date:** June 20, 2026

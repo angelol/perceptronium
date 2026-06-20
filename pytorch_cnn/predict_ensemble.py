@@ -140,6 +140,7 @@ def main():
                         help="Paths to model weight files. Pass multiple files to build an ensemble!")
     parser.add_argument("--image", type=str, help="Optional path to a single Cat/Dog image to evaluate")
     parser.add_argument("--no-tta", action="store_true", help="Disable Test-Time Augmentation (TTA)")
+    parser.add_argument("--attention-type", type=str, default="se", choices=["se", "cbam"], help="Attention type in blocks")
     args = parser.parse_args()
     
     # Device Selection
@@ -176,7 +177,7 @@ def main():
     # Load all models in the ensemble
     models = []
     for path in resolved_paths:
-        m = CustomCNN().to(device)
+        m = CustomCNN(attention_type=args.attention_type).to(device)
         try:
             m.load_state_dict(torch.load(path, map_location=device))
             models.append(m)

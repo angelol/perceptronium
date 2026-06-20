@@ -79,7 +79,15 @@ def predict(image_path, model, device, image_size=224):
     print("=" * 45 + "\n")
 
 def main():
-    weights_path = "pytorch_cnn/model.pth"
+    import argparse
+    parser = argparse.ArgumentParser(description="PyTorch Custom CNN Inference Playground")
+    parser.add_argument("image", type=str, nargs="?", help="Optional path to a single Cat/Dog image to evaluate")
+    parser.add_argument("--weights-path", type=str, default="pytorch_cnn/model.pth", help="Path to trained weights")
+    parser.add_argument("--attention-type", type=str, default="se", choices=["se", "cbam"], help="Attention type in blocks")
+    parser.add_argument("--image-size", type=int, default=224, help="Input resolution")
+    args = parser.parse_args()
+
+    weights_path = args.weights_path
     if not os.path.exists(weights_path) and os.path.exists("model.pth"):
         weights_path = "model.pth"
         
@@ -94,7 +102,7 @@ def main():
     print(f"Loading custom CNN on: {device.type.upper()}...")
     
     # Instantiate and load model
-    model = CustomCNN().to(device)
+    model = CustomCNN(attention_type=args.attention_type).to(device)
     try:
         model.load_state_dict(torch.load(weights_path, map_location=device))
         print("✓ Model weights loaded successfully!")
@@ -103,13 +111,11 @@ def main():
         sys.exit(1)
         
     # Interactive predict loop
-    if len(sys.argv) > 1:
-        # Filepath passed via argument
-        img_path = sys.argv[1]
-        if os.path.exists(img_path):
-            predict(img_path, model, device)
+    if args.image:
+        if os.path.exists(args.image):
+            predict(args.image, model, device, image_size=args.image_size)
         else:
-            print(f"❌ Error: File '{img_path}' does not exist.")
+            print(f"❌ Error: File '{args.image}' does not exist.")
     else:
         print("\n🐾 Welcome to the PyTorch Custom CNN Playground! 🐾")
         print("Enter 'exit' or 'quit' at any time to leave the playground.\n")
@@ -122,7 +128,7 @@ def main():
                     print("Goodbye!")
                     break
                 if os.path.exists(user_input):
-                    predict(user_input, model, device)
+                    predict(user_input, model, device, image_size=args.image_size)
                 else:
                     print(f"❌ Error: File '{user_input}' does not exist. Please check the path.")
             except (KeyboardInterrupt, EOFError):
