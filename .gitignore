@@ -1,0 +1,27 @@
+# Rust compiler outputs
+/target/
+
+# Data and large files
+/data/
+
+# Python Virtual Environments
+.venv/
+**/venv/
+**/env/
+
+# Python Bytecode and cache files
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# PyTorch weights and checkpoints
+**/*.pth
+**/*.pt
+
+# Generated graphics and curves
+**/learning_curves.png
+
+# System Files
+.DS_Store
+**/.DS_Store
