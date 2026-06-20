@@ -28,7 +28,7 @@ These guidelines are automatically loaded and followed by Antigravity (and all s
 ## 🧹 Workspace & Git Hygiene
 
 ### 1. Keep Workspace Clean (No Garbage)
-* Never leave garbage, temporary test scripts, unused checkpoints, or raw debug logs in the workspace. Always clean up temporary files immediately before ending a turn.
+* Never leave garbage, temporary test scripts, unused checkpoints, or raw debug logs in the workspace. Always clean up temporary files immediately before ending a turn. If temporary files or scratch scripts are absolutely necessary during a turn, ensure they are added to `.gitignore` and deleted immediately as soon as they are no longer needed.
 
 ### 2. Clean Git Commits
 * Always commit completed code changes to Git at the end of each turn. Ensure commit messages are clean, professional, and descriptive. Never commit broken code, scratch files, or binary weight checkpoint backups (like `.pth` files) unless explicitly asked.
