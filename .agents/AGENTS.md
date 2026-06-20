@@ -33,3 +33,6 @@ These guidelines are automatically loaded and followed by Antigravity (and all s
 ### 2. Clean Git Commits
 * Always commit completed code changes to Git at the end of each turn. Ensure commit messages are clean, professional, and descriptive. Never commit broken code, scratch files, or binary weight checkpoint backups (like `.pth` files) unless explicitly asked.
 
+### 3. Maintain Accuracy Log (CRITICAL)
+* Always update [accuracy_log.md](file:///Users/al/Projects/angelo/perceptronium/accuracy_log.md) at the end of any training or model iteration run. Record the date, architectural adjustments, exact hyperparameter configurations, and key metric benchmarks to preserve absolute comparative context over time.
+
