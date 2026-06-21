@@ -12,10 +12,12 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 | **2** | **Option A+ (Residual CNN)** | Residual feedforward CNN | ~4.91M | **87.60%** | **87.60%** | Minimal | Skip connections, RandomResizedCrop, Cosine Annealing |
 | **3** | **CBAM-EfficientNet v3 (SWA)** | CBAM-EfficientNet v3 (CNN-Transformer Hybrid) | ~13.88M | **87.30%** | **86.40%** | Negative (Underfitting) | Lookahead wrapper, 2D MHSA, Fused-MBConv, SWA, Progressive resizing |
 | **4** | **Option C (CBAM-EfficientNet)** | Depthwise Attention Bottleneck | ~1.28M | **84.90%** | **84.90%** | Negative (None) | CBAM Attention, MBConv stages, OneCycleLR, Mixup/CutMix |
-| **5** | **Option A (Custom CNN)** | Standard feedforward CNN | ~441K | **76.15%** | **74.50%** | Minimal | AdaptiveAvgPool, BatchNorm, Dropout |
-| **6** | **Rust CNN Baseline** | From-scratch CPU CNN | ~924K | **68.35%** | **66.90%** | Moderate | 2 Conv, 2 Pool, 1 Dense, horizontal flips in Rust |
-| **7** | **Rust MLP Baseline** | From-scratch CPU MLP | ~131K | **~50.00%** | **~50.00%** | High Bias | Fully connected nodes, no spatial representation |
-| **8** | **CBAM-EfficientNet v3 (ASAM)** | CBAM-EfficientNet v3 (CNN-Transformer Hybrid) | ~13.88M | **50.00%** | **50.00%** | Failed Run | ASAM (rho=0.5) destroyed weight initialization |
+| **5** | **CBAM-EfficientNet v3 (GCP Run 10)** | CBAM-EfficientNet v3 (CNN-Transformer Hybrid) | ~13.88M | **76.22%** | **74.04%** | Moderate | GCP CUDA migration, AMP, compile, 60 epochs of Lookahead-AdamW, SWA |
+| **6** | **Option A (Custom CNN)** | Standard feedforward CNN | ~441K | **76.15%** | **74.50%** | Minimal | AdaptiveAvgPool, BatchNorm, Dropout |
+| **7** | **Rust CNN Baseline** | From-scratch CPU CNN | ~924K | **68.35%** | **66.90%** | Moderate | 2 Conv, 2 Pool, 1 Dense, horizontal flips in Rust |
+| **8** | **Rust MLP Baseline** | From-scratch CPU MLP | ~131K | **~50.00%** | **~50.00%** | High Bias | Fully connected nodes, no spatial representation |
+| **9** | **CBAM-EfficientNet v3 (Local Run 9)** | CBAM-EfficientNet v3 (CNN-Transformer Hybrid) | ~13.88M | **55.27%** | - | Failed/Degraded | Stuck at ~55% on local MPS due to silent gradient underflow/clipping |
+| **10** | **CBAM-EfficientNet v3 (ASAM)** | CBAM-EfficientNet v3 (CNN-Transformer Hybrid) | ~13.88M | **50.00%** | **50.00%** | Failed Run | ASAM (rho=0.5) destroyed weight initialization |
 
 ---
 
@@ -172,5 +174,41 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 * **Best Test Accuracy:** **`87.30%`** (Epoch 42, 6-View TTA)
 * **SWA Test Accuracy:** **`86.40%`** (with 6-View TTA, Test Loss: `0.3662`)
 * **Overfitting / Generalization Analysis:**
-  * **Result:** Severe underfitting (approximate Train Acc `84.28%` vs Test Acc `85.40%` at Epoch 45).
-  * **Insights:** Lookahead resolved the learning failure entirely, leading to highly stable and smooth loss curves. However, 45 epochs was not nearly enough for a 13.8M parameters model trained entirely from scratch under such heavy regularization and progressive resizing (which restricted full-resolution training to only the final 15 epochs). The model did not overfit at all and has substantial untapped capacity. For future runs, we should extend epochs to 100+, increase the peak learning rate slightly, or train at full resolution to extract this capacity.
+  - **Result:** Severe underfitting (approximate Train Acc `84.28%` vs Test Acc `85.40%` at Epoch 45).
+  - **Insights:** Lookahead resolved the learning failure entirely, leading to highly stable and smooth loss curves. However, 45 epochs was not nearly enough for a 13.8M parameters model trained entirely from scratch under such heavy regularization and progressive resizing (which restricted full-resolution training to only the final 15 epochs). The model did not overfit at all and has substantial untapped capacity. For future runs, we should extend epochs to 100+, increase the peak learning rate slightly, or train at full resolution to extract this capacity.
+
+---
+
+### Run 9: CBAM-EfficientNet v3 (Local MPS Run)
+* **Date:** June 21, 2026
+* **Hardware Device:** Metal GPU (MPS)
+* **Input Resolution:** $224 \times 224$ RGB
+* **Architecture Highlights:**
+  - Upgraded custom CBAM-EfficientNet v3 (~13.88M parameters) combining fused early stages, late standard stage, and a 2D Multi-Head Self-Attention layer.
+* **Hyperparameters & Regularization:**
+  - **Optimizer:** Lookahead over AdamW, peak learning rate `8e-4`, weight decay `0.05`.
+  - **Scheduler:** Cosine Warm Restarts.
+  - **Regularization:** SWA enabled (start epoch 35), Mixup, Cutmix, TrivialAugmentWide.
+* **Best Test Accuracy:** **`55.27%`** (Epoch 36, slow/degraded convergence)
+* **Overfitting / Generalization Analysis:**
+  - **Result:** Complete learning degradation (stuck near coin-toss).
+  - **Insights:** The training run encountered silent learning degradation on local Apple Silicon GPUs (MPS backend). Lookahead combined with AMP and gradient clipping caused silent gradient underflow/clipping errors in the MPS graph compiler, preventing proper weights update and stalling learning around ~53-55% accuracy. This prompted a migration to cloud-based CUDA hardware.
+
+---
+
+### Run 10: CBAM-EfficientNet v3 (GCP Spot VM Run)
+* **Date:** June 21, 2026
+* **Hardware Device:** GCP Spot VM (1x NVIDIA L4 GPU with CUDA)
+* **Input Resolution:** $224 \times 224$ RGB (Full resolution training)
+* **Architecture Highlights:**
+  - Upgraded custom CBAM-EfficientNet v3 (~13.88M parameters) combining fused early stages, late standard stage, and a 2D Multi-Head Self-Attention layer.
+* **Hyperparameters & Regularization:**
+  - **Optimizer:** Lookahead over AdamW, peak learning rate `8e-4`, weight decay `0.05`.
+  - **Scheduler:** Cosine Warm Restarts.
+  - **Regularization:** SWA enabled (start epoch 35), Mixup, Cutmix, TrivialAugmentWide.
+  - **Acceleration:** PyTorch Automatic Mixed Precision (AMP) and Model Compilation (`torch.compile`).
+* **Best Test Accuracy:** **`76.22%`** (Epoch 59, with 6-View Multi-Scale TTA)
+* **SWA Test Accuracy:** **`74.04%`** (with 6-View Multi-Scale TTA, SWA Test Loss: `0.5565`)
+* **Overfitting / Generalization Analysis:**
+  - **Result:** Successful convergence with moderate underfitting / slower convergence.
+  - **Insights:** Migrating the training to GCP NVIDIA L4 GPU under the CUDA backend completely resolved the backend compilation gradient bug. The model trained successfully and hit **76.22%** validation accuracy, taking exactly **110 seconds** per epoch (compared to ~12 minutes on Mac MPS). However, training a 13.88M parameters model from scratch is a highly challenging optimization problem, and the model was still actively converging at 60 epochs. SWA stabilized the weights at 74.04% accuracy. To push this architecture to its full potential, a longer training budget (150+ epochs) or higher initial learning rate is recommended.

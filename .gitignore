@@ -21,7 +21,12 @@
 
 # Generated graphics and curves
 **/learning_curves.png
+**/learning_curves_*.png
 **/calibration_reliability.png
+
+# Logs and text results
+**/*.log
+**/temperature.txt
 
 # System Files
 .DS_Store

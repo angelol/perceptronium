@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+
+# Perceptronium GCP GPU Startup Training Script
+# Runs inside the Deep Learning VM instance on GCE.
+
+# 1. Initialize Paths
+WORKDIR="/opt/perceptronium"
+mkdir -p "$WORKDIR"
+mkdir -p "$WORKDIR/data"
+
+# Redirect stdout and stderr to a local log file for live tail and debugging
+exec > >(tee -i /var/log/perceptronium_startup.log) 2>&1
+
+echo "=== PERCEPTRONIUM GCP STARTUP RUN STARTING ==="
+date
+
+# GCS Bucket Config
+BUCKET_NAME="ai-studio-bucket-734017220015-us-west1"
+GCS_PREFIX="perceptronium"
+
+# 2. Download code and datasets from GCS
+echo "📥 Downloading archives from GCS bucket: gs://$BUCKET_NAME..."
+gcloud storage cp "gs://$BUCKET_NAME/$GCS_PREFIX/data/PetImages.tar.gz" "$WORKDIR/data/PetImages.tar.gz"
+gcloud storage cp "gs://$BUCKET_NAME/$GCS_PREFIX/data/cats_dogs_dataset.tar.gz" "$WORKDIR/data/cats_dogs_dataset.tar.gz"
+gcloud storage cp "gs://$BUCKET_NAME/$GCS_PREFIX/code/pytorch_cnn.tar.gz" "$WORKDIR/pytorch_cnn.tar.gz"
+
+echo "📦 Extracting archives..."
+tar -xzf "$WORKDIR/data/PetImages.tar.gz" -C "$WORKDIR/data"
+tar -xzf "$WORKDIR/data/cats_dogs_dataset.tar.gz" -C "$WORKDIR"
+tar -xzf "$WORKDIR/pytorch_cnn.tar.gz" -C "$WORKDIR"
+
+# 3. Enter the PyTorch training workspace
+cd "$WORKDIR/pytorch_cnn"
+
+# 4. Detect and configure the Deep Learning VM Python environment
+PYTHON_BIN="python3"
+PIP_BIN="pip3"
+
+# Candidate paths for pre-installed Python environments (with GPU support)
+CANDIDATES=(
+    "/opt/conda/envs/pytorch/bin/python"
+    "/opt/conda/envs/pytorch/bin/python3"
+    "/opt/conda/envs/c2d-dl-platform-py310/bin/python"
+    "/opt/conda/envs/c2d-dl-platform-py310/bin/python3"
+    "/opt/conda/bin/python"
+    "/opt/conda/bin/python3"
+)
+
+for CANDIDATE in "${CANDIDATES[@]}"; do
+    if [ -x "$CANDIDATE" ]; then
+        echo "🔍 Testing python candidate: $CANDIDATE"
+        # Test if PyTorch works in this candidate
+        if "$CANDIDATE" -c "import torch" &>/dev/null; then
+            PYTHON_BIN="$CANDIDATE"
+            # Corresponding pip should be in the same bin directory
+            CANDIDATE_PIP="${CANDIDATE%/*}/pip"
+            if [ -x "$CANDIDATE_PIP" ]; then
+                PIP_BIN="$CANDIDATE_PIP"
+            else
+                PIP_BIN="$PYTHON_BIN -m pip"
+            fi
+            echo "✓ Successfully selected high-performance PyTorch Python environment: $PYTHON_BIN"
+            break
+        fi
+    fi
+done
+
+if [ "$PYTHON_BIN" = "python3" ]; then
+    echo "⚠️ Warning: No pre-configured conda PyTorch environment found. Using system Python..."
+    # On Ubuntu 24.04, pip3 needs --break-system-packages (can be enabled via env var to prevent syntax errors with older pips)
+    export PIP_BREAK_SYSTEM_PACKAGES=1
+    PIP_BIN="pip3"
+fi
+
+echo "🐍 Using Python binary: $PYTHON_BIN"
+$PYTHON_BIN --version
+
+# 5. Install optional package dependencies if needed
+if [ -f "requirements.txt" ]; then
+    echo "pip: Installing requirements from requirements.txt..."
+    $PIP_BIN install -r requirements.txt || echo "⚠️ Warning: Some pip installations returned errors, proceeding anyway..."
+fi
+
+
+# 6. Execute Training Run 10 with high performance parameters
+# Running with Lookahead AdamW, SWA, progressive resizing, and maximum GPU speed-ups (AMP + compile)
+echo "🏋️ Launching high-performance training Run 10 on NVIDIA L4 GPU..."
+TRAINING_FAILED=0
+$PYTHON_BIN -u train.py \
+    --epochs 60 \
+    --optimizer lookahead \
+    --swa \
+    --amp \
+    --compile \
+    --data-dir "$WORKDIR/data/PetImages" \
+    --extra-dir "$WORKDIR/cats_dogs_dataset" \
+    --weights-path "$WORKDIR/pytorch_cnn/model.pth" \
+    > "$WORKDIR/pytorch_cnn/training.log" 2>&1 || TRAINING_FAILED=1
+
+if [ "$TRAINING_FAILED" -eq 1 ]; then
+    echo "❌ Error: Training run failed! Copying partial logs to GCS..."
+else
+    echo "✅ Training completed successfully!"
+fi
+
+# 7. Upload checkpoints and logs to GCS
+echo "📤 Uploading weights, checkpoints, and logs to GCS..."
+if [ -f "$WORKDIR/pytorch_cnn/model.pth" ]; then
+    gcloud storage cp "$WORKDIR/pytorch_cnn/model.pth" "gs://$BUCKET_NAME/$GCS_PREFIX/results/model_run10.pth" || true
+fi
+if [ -f "$WORKDIR/pytorch_cnn/model_swa.pth" ]; then
+    gcloud storage cp "$WORKDIR/pytorch_cnn/model_swa.pth" "gs://$BUCKET_NAME/$GCS_PREFIX/results/model_swa_run10.pth" || true
+fi
+if [ -f "$WORKDIR/pytorch_cnn/learning_curves.png" ]; then
+    gcloud storage cp "$WORKDIR/pytorch_cnn/learning_curves.png" "gs://$BUCKET_NAME/$GCS_PREFIX/results/learning_curves_run10.png" || true
+fi
+if [ -f "$WORKDIR/pytorch_cnn/training.log" ]; then
+    gcloud storage cp "$WORKDIR/pytorch_cnn/training.log" "gs://$BUCKET_NAME/$GCS_PREFIX/results/training_run10.log" || true
+fi
+if [ -f "/var/log/perceptronium_startup.log" ]; then
+    gcloud storage cp "/var/log/perceptronium_startup.log" "gs://$BUCKET_NAME/$GCS_PREFIX/results/startup_run10.log" || true
+fi
+
+echo "=== PERCEPTRONIUM CLOUD TRAINING FINISHED ==="
+date
+
+# 8. Self-termination: Immediately poweroff the VM to terminate running costs
+echo "🛑 Self-terminating instance now to prevent idle billing..."
+sudo poweroff

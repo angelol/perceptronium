@@ -104,6 +104,10 @@ class CatsAndDogsDataset(Dataset):
         
         valid_paths = []
         for f in files:
+            # Skip hidden files and Apple resource forks (e.g. ._filename.jpg)
+            if f.startswith("."):
+                continue
+                
             # Skip the exactly two corrupted files in the raw Microsoft dataset
             if f in ["666.jpg", "11702.jpg"]:
                 print(f"  [Info] Skipping known corrupted image by name: {f}")

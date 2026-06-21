@@ -282,7 +282,8 @@ def cutmix_data(x, y, alpha=1.0, device='cpu'):
 
 
 def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, scheduler=None, 
-                    mixup_prob=0.3, cutmix_prob=0.3, progressive=False, use_sam=False, use_asam=False):
+                    mixup_prob=0.3, cutmix_prob=0.3, progressive=False, use_sam=False, use_asam=False,
+                    scaler=None):
     """Executes a single epoch of training with optional Mixup and CutMix batch-mixing, progressive resizing, and SAM/ASAM."""
     model.train()
     running_loss = 0.0
@@ -325,35 +326,53 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, sche
         if use_sam or use_asam:
             # First forward-backward pass
             optimizer.zero_grad()
-            if mixed:
-                logits = model(mixed_inputs)
-                loss = lam * raw_criterion(logits, labels_a) + (1.0 - lam) * raw_criterion(logits, labels_b)
+            with torch.amp.autocast(device_type=device.type if device.type in ["cuda", "cpu"] else "cuda", enabled=(scaler is not None)):
+                if mixed:
+                    logits = model(mixed_inputs)
+                    loss = lam * raw_criterion(logits, labels_a) + (1.0 - lam) * raw_criterion(logits, labels_b)
+                else:
+                    logits = model(inputs)
+                    loss = criterion(logits, labels)
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                optimizer.first_step(zero_grad=True)
             else:
-                logits = model(inputs)
-                loss = criterion(logits, labels)
-            loss.backward()
-            optimizer.first_step(zero_grad=True)
+                loss.backward()
+                optimizer.first_step(zero_grad=True)
             
             # Second forward-backward pass (on perturbed parameters)
-            if mixed:
-                logits2 = model(mixed_inputs)
-                loss2 = lam * raw_criterion(logits2, labels_a) + (1.0 - lam) * raw_criterion(logits2, labels_b)
+            with torch.amp.autocast(device_type=device.type if device.type in ["cuda", "cpu"] else "cuda", enabled=(scaler is not None)):
+                if mixed:
+                    logits2 = model(mixed_inputs)
+                    loss2 = lam * raw_criterion(logits2, labels_a) + (1.0 - lam) * raw_criterion(logits2, labels_b)
+                else:
+                    logits2 = model(inputs)
+                    loss2 = criterion(logits2, labels)
+            if scaler is not None:
+                scaler.scale(loss2).backward()
+                scaler.unscale_(optimizer)
+                optimizer.second_step(zero_grad=True)
             else:
-                logits2 = model(inputs)
-                loss2 = criterion(logits2, labels)
-            loss2.backward()
-            optimizer.second_step(zero_grad=True)
+                loss2.backward()
+                optimizer.second_step(zero_grad=True)
         else:
             # Standard single forward-backward pass
             optimizer.zero_grad()
-            if mixed:
-                logits = model(mixed_inputs)
-                loss = lam * raw_criterion(logits, labels_a) + (1.0 - lam) * raw_criterion(logits, labels_b)
+            with torch.amp.autocast(device_type=device.type if device.type in ["cuda", "cpu"] else "cuda", enabled=(scaler is not None)):
+                if mixed:
+                    logits = model(mixed_inputs)
+                    loss = lam * raw_criterion(logits, labels_a) + (1.0 - lam) * raw_criterion(logits, labels_b)
+                else:
+                    logits = model(inputs)
+                    loss = criterion(logits, labels)
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
             else:
-                logits = model(inputs)
-                loss = criterion(logits, labels)
-            loss.backward()
-            optimizer.step()
+                loss.backward()
+                optimizer.step()
             
         # Step OneCycleLR per batch
         if scheduler is not None and isinstance(scheduler, optim.lr_scheduler.OneCycleLR):
@@ -489,6 +508,8 @@ def main():
     parser.add_argument("--progressive", action="store_true", help="Enable progressive resizing curriculum")
     parser.add_argument("--limit-train", type=int, default=12150, help="Max training images per class")
     parser.add_argument("--limit-test", type=int, default=1349, help="Max testing/validation images per class")
+    parser.add_argument("--amp", action="store_true", help="Enable Automatic Mixed Precision (AMP)")
+    parser.add_argument("--compile", action="store_true", help="Enable torch.compile model compilation")
     args = parser.parse_args()
     
     set_seed(args.seed)
@@ -538,6 +559,15 @@ def main():
     # 3. Model, Loss, Optimizer, and LR Scheduler
     model = CustomCNN(attention_type=args.attention_type).to(device)
     
+    # Model Compilation (Optional, high-performance on G2 GPU)
+    if args.compile:
+        print("⚙️ Compiling model with torch.compile...", flush=True)
+        model = torch.compile(model)
+        
+    scaler = torch.cuda.amp.GradScaler(enabled=args.amp) if (args.amp and device.type == "cuda") else None
+    if scaler is not None:
+        print("⚙️ Automatic Mixed Precision (AMP) Enabled with GradScaler", flush=True)
+        
     # Using Label Smoothing BCE loss to improve final boundary calibration
     criterion = LabelSmoothingBCEWithLogitsLoss(smoothing=0.05)
     
@@ -641,7 +671,8 @@ def main():
         train_loss, train_acc = train_one_epoch(
             model, train_loader, criterion, optimizer, device, epoch,
             scheduler=scheduler, mixup_prob=mix_prob, cutmix_prob=mix_prob,
-            progressive=args.progressive, use_sam=use_sam, use_asam=use_asam
+            progressive=args.progressive, use_sam=use_sam, use_asam=use_asam,
+            scaler=scaler
         )
         
         # Evaluate with 6-View Multi-Scale TTA
