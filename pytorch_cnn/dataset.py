@@ -4,6 +4,31 @@ from torch.utils.data import Dataset
 from PIL import Image
 import torchvision.transforms as transforms
 
+class LCG:
+    """
+    Deterministic Pseudo-Random Number Generator based on POSIX LCG constants.
+    Guarantees 100% cross-language alignment with the Rust Lcg implementation.
+    """
+    def __init__(self, seed):
+        self.state = seed
+
+    def next_u32(self):
+        self.state = (self.state * 1103515245 + 12345) & 0x7fffffff
+        return self.state
+
+    def next_f64(self):
+        return self.next_u32() / 2147483648.0
+
+def deterministic_shuffle(paths, seed):
+    """
+    In-place deterministic Fisher-Yates shuffle matching the Rust implementation exactly.
+    """
+    lcg = LCG(seed)
+    n = len(paths)
+    for i in range(n - 1, 0, -1):
+        j = int(lcg.next_f64() * (i + 1))
+        paths[i], paths[j] = paths[j], paths[i]
+
 class CatsAndDogsDataset(Dataset):
     """
     Custom PyTorch Dataset for Microsoft Cats & Dogs, guaranteeing perfect
@@ -14,7 +39,7 @@ class CatsAndDogsDataset(Dataset):
     _cached_paths = {}
 
     def __init__(self, root_dir, split="train", image_size=224, transform=None,
-                 limit_train_per_class=10000, limit_test_per_class=2501):
+                 limit_train_per_class=10000, limit_test_per_class=2501, seed=42):
         self.root_dir = root_dir
         self.split = split.lower()
         self.image_size = image_size
@@ -23,12 +48,14 @@ class CatsAndDogsDataset(Dataset):
         cats_dir = os.path.join(root_dir, "Cat")
         dogs_dir = os.path.join(root_dir, "Dog")
         
-        # We only ever need limit_train + limit_test images from each category
-        max_needed = limit_train_per_class + limit_test_per_class
+        print(f"Loading paths for split: {self.split.upper()}...")
+        # Create fresh lists from the sorted directory caches to prevent side effects
+        cat_paths = list(self._get_valid_sorted_paths(cats_dir))
+        dog_paths = list(self._get_valid_sorted_paths(dogs_dir))
         
-        print(f"Loading paths for split: {self.split.upper()} (checking up to {max_needed} valid files per class)...")
-        cat_paths = self._get_valid_sorted_paths(cats_dir, max_needed)
-        dog_paths = self._get_valid_sorted_paths(dogs_dir, max_needed)
+        print(f"Applying aligned deterministic shuffle (seed={seed})...")
+        deterministic_shuffle(cat_paths, seed)
+        deterministic_shuffle(dog_paths, seed)
         
         # Partition paths deterministically matching the Rust offsets
         if self.split == "train":
@@ -54,7 +81,7 @@ class CatsAndDogsDataset(Dataset):
             
         print(f"✓ Loaded {len(self.paths)} images for {self.split} split ({self.labels.count(0.0)} Cats, {self.labels.count(1.0)} Dogs)")
 
-    def _get_valid_sorted_paths(self, dir_path, max_needed):
+    def _get_valid_sorted_paths(self, dir_path):
         # Return cached paths if available
         if dir_path in CatsAndDogsDataset._cached_paths:
             return CatsAndDogsDataset._cached_paths[dir_path]
@@ -67,20 +94,15 @@ class CatsAndDogsDataset(Dataset):
         
         valid_paths = []
         for f in files:
-            # Bounded scanning: Stop once we have gathered all the files we will ever need
-            if len(valid_paths) >= max_needed:
-                break
+            # Skip the exactly two corrupted files in the raw Microsoft dataset
+            if f in ["666.jpg", "11702.jpg"]:
+                print(f"  [Info] Skipping known corrupted image by name: {f}")
+                continue
                 
             if f.lower().endswith((".jpg", ".jpeg", ".png")):
                 full_path = os.path.join(dir_path, f)
                 if os.path.isfile(full_path):
-                    # Fast validation: check if PIL can open it
-                    try:
-                        with Image.open(full_path) as img:
-                            img.draft(img.mode, (32, 32))  # Load minimal pixel draft
-                        valid_paths.append(full_path)
-                    except Exception:
-                        print(f"  [Warning] Skipping corrupted image during scanning: {f}")
+                    valid_paths.append(full_path)
                         
         # Save in class-level cache
         CatsAndDogsDataset._cached_paths[dir_path] = valid_paths

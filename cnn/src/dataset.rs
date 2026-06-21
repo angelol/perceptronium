@@ -125,6 +125,7 @@ fn load_from_dir_deterministic(
     limit: usize,
     label: f64,
     image_size: u32,
+    seed: u32,
     dest: &mut Vec<(Vec<f64>, f64)>,
 ) -> Result<(), String> {
     println!("Scanning directory {}...", dir.display());
@@ -141,6 +142,12 @@ fn load_from_dir_deterministic(
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         if path.is_file() {
+            if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                if file_name == "666.jpg" || file_name == "11702.jpg" {
+                    println!("  [Info] Skipping known corrupted image by name: {}", file_name);
+                    continue;
+                }
+            }
             if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
                 let ext = ext.to_lowercase();
                 if ext == "jpg" || ext == "jpeg" || ext == "png" {
@@ -152,6 +159,14 @@ fn load_from_dir_deterministic(
 
     // 2. Sort paths alphabetically to guarantee absolute determinism across all platforms/runs
     paths.sort();
+
+    // 2b. Apply deterministic random Fisher-Yates shuffle matching the Python PyTorch dataset
+    let mut shuffle_prng = Lcg::new(seed);
+    let num_paths = paths.len();
+    for i in (1..num_paths).rev() {
+        let j = (shuffle_prng.next_f64() * (i + 1) as f64).floor() as usize;
+        paths.swap(i, j);
+    }
 
     println!("Found {} total images. Loading up to {} images (skipping first {})...", paths.len(), limit, skip);
 
@@ -207,12 +222,12 @@ pub fn load_split(
     let dogs_dir = dataset_dir.join("Dog");
 
     // 1. Load training data: first limit_train_per_class elements (skip = 0)
-    load_from_dir_deterministic(&cats_dir, 0, limit_train_per_class, 0.0, image_size, &mut train_data)?;
-    load_from_dir_deterministic(&dogs_dir, 0, limit_train_per_class, 1.0, image_size, &mut train_data)?;
+    load_from_dir_deterministic(&cats_dir, 0, limit_train_per_class, 0.0, image_size, seed, &mut train_data)?;
+    load_from_dir_deterministic(&dogs_dir, 0, limit_train_per_class, 1.0, image_size, seed, &mut train_data)?;
 
     // 2. Load testing data: next limit_test_per_class elements (skip = limit_train_per_class)
-    load_from_dir_deterministic(&cats_dir, limit_train_per_class, limit_test_per_class, 0.0, image_size, &mut test_data)?;
-    load_from_dir_deterministic(&dogs_dir, limit_train_per_class, limit_test_per_class, 1.0, image_size, &mut test_data)?;
+    load_from_dir_deterministic(&cats_dir, limit_train_per_class, limit_test_per_class, 0.0, image_size, seed, &mut test_data)?;
+    load_from_dir_deterministic(&dogs_dir, limit_train_per_class, limit_test_per_class, 1.0, image_size, seed, &mut test_data)?;
 
     if train_data.is_empty() || test_data.is_empty() {
         return Err("Loaded datasets are empty. Check dataset paths and contents.".to_string());
@@ -253,8 +268,8 @@ pub fn load_test_split(
     let dogs_dir = dataset_dir.join("Dog");
 
     // Load testing data: skip the training data entirely, grab the test subset
-    load_from_dir_deterministic(&cats_dir, limit_train_per_class, limit_test_per_class, 0.0, image_size, &mut test_data)?;
-    load_from_dir_deterministic(&dogs_dir, limit_train_per_class, limit_test_per_class, 1.0, image_size, &mut test_data)?;
+    load_from_dir_deterministic(&cats_dir, limit_train_per_class, limit_test_per_class, 0.0, image_size, seed, &mut test_data)?;
+    load_from_dir_deterministic(&dogs_dir, limit_train_per_class, limit_test_per_class, 1.0, image_size, seed, &mut test_data)?;
 
     if test_data.is_empty() {
         return Err("Loaded validation dataset is empty. Check dataset path.".to_string());
@@ -271,3 +286,60 @@ pub fn load_test_split(
     let (test_inputs, test_labels): (Vec<Vec<f64>>, Vec<f64>) = test_data.into_iter().unzip();
     Ok((test_inputs, test_labels))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cross_language_split_alignment() {
+        let mut data_dir = std::path::PathBuf::from("data");
+        if !data_dir.exists() && std::path::Path::new("../data").exists() {
+            data_dir = std::path::PathBuf::from("../data");
+        }
+        let cats_dir = data_dir.join("PetImages").join("Cat");
+        if !cats_dir.exists() {
+            println!("Skipping split alignment test: dataset not found.");
+            return;
+        }
+
+        // Collect and sort paths just like in the real implementation
+        let entries = std::fs::read_dir(&cats_dir).unwrap();
+        let mut paths = Vec::new();
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_file() {
+                if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                    if file_name == "666.jpg" || file_name == "11702.jpg" {
+                        println!("  [Info] Skipping known corrupted image by name: {}", file_name);
+                        continue;
+                    }
+                }
+                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                    let ext = ext.to_lowercase();
+                    if ext == "jpg" || ext == "jpeg" || ext == "png" {
+                        paths.push(path);
+                    }
+                }
+            }
+        }
+        paths.sort();
+
+        // Apply deterministic random Fisher-Yates shuffle matching the Python PyTorch dataset
+        let mut shuffle_prng = Lcg::new(42);
+        let num_paths = paths.len();
+        for i in (1..num_paths).rev() {
+            let j = (shuffle_prng.next_f64() * (i + 1) as f64).floor() as usize;
+            paths.swap(i, j);
+        }
+
+        let first_3: Vec<&str> = paths.iter()
+            .take(3)
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+
+        println!("First 3 shuffled Cats in Rust: {:?}", first_3);
+        assert_eq!(first_3, vec!["6202.jpg", "9357.jpg", "3342.jpg"]);
+    }
+}
+
