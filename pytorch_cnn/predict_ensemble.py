@@ -1,5 +1,6 @@
 import os
 import sys
+import numpy as np
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
@@ -48,10 +49,40 @@ def load_temperature(weights_dir):
     return 1.0
 
 
-def predict_ensemble(image_path, models, device, T=1.0, image_size=224, use_tta=True):
+def enable_dropout(model):
+    """
+    Force all Dropout and DropPath layers to remain in training mode during inference,
+    enabling Bayesian Monte Carlo (MC) uncertainty estimation.
+    """
+    for m in model.modules():
+        if m.__class__.__name__.startswith("Dropout") or m.__class__.__name__ == "DropPath":
+            m.train(True)
+
+
+def binary_entropy(p, eps=1e-8):
+    """
+    Computes binary entropy of probability p in bits.
+    Accepts scalar, list, or numpy array.
+    """
+    p = np.clip(p, eps, 1.0 - eps)
+    return - p * np.log2(p) - (1.0 - p) * np.log2(1.0 - p)
+
+
+def draw_bar(val, max_val=1.0, width=20, color_code="\033[32m"):
+    """
+    Generates a beautiful terminal-based colored progress bar.
+    """
+    filled = int(round((val / max_val) * width)) if max_val > 0 else 0
+    filled = min(width, max_val if filled > width else filled)
+    bar = "█" * filled + "░" * (width - filled)
+    return f"{color_code}{bar}\033[0m {val:.4f}"
+
+
+def predict_ensemble(image_path, models, device, T=1.0, image_size=224, use_tta=True, mc_runs=0):
     """
     Preprocesses an input image, runs CNN inference across an ensemble of models,
-    averages predicted probabilities, and applies temperature scaling.
+    averages predicted probabilities, and applies temperature scaling with optional
+    Monte Carlo (MC) Dropout uncertainty estimation.
     """
     # 1. Show ASCII art preview
     print("\n📸 ASCII ART PREVIEW:")
@@ -75,10 +106,15 @@ def predict_ensemble(image_path, models, device, T=1.0, image_size=224, use_tta=
     
     input_tensor = transform(img).unsqueeze(0).to(device) # Shape: (1, 3, 224, 224)
     
-    # 3. Model Inference (Ensemble & Calibrated)
+    # 3. Model Inference Setup
+    is_mc = mc_runs > 0
+    runs_to_execute = mc_runs if is_mc else 1
+    
     for model in models:
-        model.eval()
-        
+        model.eval() # Puts normal layers (BatchNorm, LayerNorm) in eval mode
+        if is_mc:
+            enable_dropout(model) # Keep dropout and DropPath active
+            
     all_probs_uncalibrated = []
     all_probs_calibrated = []
     
@@ -89,24 +125,27 @@ def predict_ensemble(image_path, models, device, T=1.0, image_size=224, use_tta=
             inputs.append(torch.flip(input_tensor, dims=[3]))
             
         for inp in inputs:
-            for model in models:
-                logits = model(inp)
-                
-                # Uncalibrated probability
-                prob_uncal = torch.sigmoid(logits).item()
-                all_probs_uncalibrated.append(prob_uncal)
-                
-                # Calibrated probability using temperature T
-                logits_calibrated = logits / T
-                prob_cal = torch.sigmoid(logits_calibrated).item()
-                all_probs_calibrated.append(prob_cal)
-                
-    # Average across all ensemble members and TTA views
-    avg_uncalibrated_prob = sum(all_probs_uncalibrated) / len(all_probs_uncalibrated)
-    avg_calibrated_prob = sum(all_probs_calibrated) / len(all_probs_calibrated)
+            for run_idx in range(runs_to_execute):
+                for model in models:
+                    logits = model(inp)
+                    
+                    # Uncalibrated probability
+                    prob_uncal = torch.sigmoid(logits).item()
+                    all_probs_uncalibrated.append(prob_uncal)
+                    
+                    # Calibrated probability using temperature T
+                    logits_calibrated = logits / T
+                    prob_cal = torch.sigmoid(logits_calibrated).item()
+                    all_probs_calibrated.append(prob_cal)
+                    
+    # Average across all ensemble members, TTA views, and MC runs
+    probs_uncal = np.array(all_probs_uncalibrated)
+    probs_cal = np.array(all_probs_calibrated)
+    
+    avg_uncalibrated_prob = np.mean(probs_uncal)
+    avg_calibrated_prob = np.mean(probs_cal)
     
     # Class determination using calibrated probability (threshold at 0.5)
-    # The decision class remains unchanged, but the confidence reflects true calibration.
     if avg_calibrated_prob >= 0.5:
         predicted_class = "DOG"
         confidence_calibrated = avg_calibrated_prob * 100.0
@@ -130,17 +169,55 @@ def predict_ensemble(image_path, models, device, T=1.0, image_size=224, use_tta=
         print(f"  • Calibrated Confidence:     \033[1;32m{confidence_calibrated:.2f}%\033[0m (Highly stable & realistic)")
     else:
         print(f"  • Model Confidence:          \033[1;32m{confidence_uncalibrated:.2f}%\033[0m (Uncalibrated)")
+        
+    # Bayesian uncertainty reporting if MC runs are specified
+    if is_mc:
+        # Total Predictive Entropy (Uncertainty of average prediction)
+        total_entropy = binary_entropy(avg_calibrated_prob)
+        
+        # Aleatoric Uncertainty (Average of predictions' individual entropy - captures data noise)
+        individual_entropies = binary_entropy(probs_cal)
+        aleatoric_entropy = np.mean(individual_entropies)
+        
+        # Epistemic Uncertainty (Mutual Information = Total - Aleatoric - captures model ambiguity)
+        epistemic_entropy = total_entropy - aleatoric_entropy
+        epistemic_entropy = max(0.0, epistemic_entropy) # clamp tiny precision negatives
+        
+        # Empirical Standard Deviation of predicted probabilities
+        prob_std = np.std(probs_cal)
+        
+        print("\n🔮 BAYESIAN MC DROPOUT & DROPPATH UNCERTAINTY ANALYSIS:")
+        print("-" * 66)
+        print(f"  • Total Inference Forward Passes:  {len(probs_cal)}")
+        print(f"  • Probability Standard Dev (Std):  {draw_bar(prob_std, 0.5, color_code='\033[35m')}")
+        print(f"  • Total Predictive Entropy:        {draw_bar(total_entropy, 1.0, color_code='\033[36m')} bits")
+        print(f"  • Aleatoric Uncertainty (Noise):   {draw_bar(aleatoric_entropy, 1.0, color_code='\033[33m')} bits")
+        print(f"  • Epistemic Uncertainty (Model):   {draw_bar(epistemic_entropy, 1.0, color_code='\033[32m')} bits")
+        
+        # Add qualitative analysis of uncertainty
+        if epistemic_entropy < 0.05 and aleatoric_entropy < 0.15:
+            assessment = "\033[1;32mHIGH CONFIDENCE\033[0m - Clear, unambiguous classification of " + predicted_class
+        elif epistemic_entropy >= 0.15:
+            assessment = "\033[1;31mHIGH MODEL AMBIGUITY\033[0m - Edge case / atypical example; model has not resolved representation."
+        elif aleatoric_entropy >= 0.3:
+            assessment = "\033[1;33mHIGH DATA NOISE\033[0m - Input is highly blurred, cropped, low contrast, or contains multiple subjects."
+        else:
+            assessment = "\033[1;34mMODERATE CONFIDENCE\033[0m - Clean prediction with standard in-distribution variance."
+            
+        print(f"  • Qualitative Assessment:          {assessment}")
+        
     print("=" * 66 + "\n")
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Ensemble & Calibrated Inference Playground")
+    parser = argparse.ArgumentParser(description="Ensemble & Calibrated Inference Playground with MC Dropout Uncertainty")
     parser.add_argument("--weights", type=str, nargs="+", default=["pytorch_cnn/model.pth"],
                         help="Paths to model weight files. Pass multiple files to build an ensemble!")
     parser.add_argument("--image", type=str, help="Optional path to a single Cat/Dog image to evaluate")
     parser.add_argument("--no-tta", action="store_true", help="Disable Test-Time Augmentation (TTA)")
     parser.add_argument("--attention-type", type=str, default="se", choices=["se", "cbam"], help="Attention type in blocks")
+    parser.add_argument("--mc-runs", type=int, default=0, help="Number of Monte Carlo forward passes for uncertainty (0 to disable)")
     args = parser.parse_args()
     
     # Device Selection
@@ -195,11 +272,11 @@ def main():
     use_tta = not args.no_tta
     if args.image:
         if os.path.exists(args.image):
-            predict_ensemble(args.image, models, device, T=T, use_tta=use_tta)
+            predict_ensemble(args.image, models, device, T=T, use_tta=use_tta, mc_runs=args.mc_runs)
         else:
             print(f"❌ Error: Image file '{args.image}' does not exist.")
     else:
-        print("\n🐾 Welcome to the Ensemble & Calibrated Inference Playground! 🐾")
+        print("\n🐾 Welcome to the Ensemble, Calibration & MC Uncertainty Playground! 🐾")
         print("Enter 'exit' or 'quit' at any time to leave the playground.\n")
         while True:
             try:
@@ -210,7 +287,7 @@ def main():
                     print("Goodbye!")
                     break
                 if os.path.exists(user_input):
-                    predict_ensemble(user_input, models, device, T=T, use_tta=use_tta)
+                    predict_ensemble(user_input, models, device, T=T, use_tta=use_tta, mc_runs=args.mc_runs)
                 else:
                     print(f"❌ Error: File '{user_input}' does not exist. Please check the path.")
             except (KeyboardInterrupt, EOFError):

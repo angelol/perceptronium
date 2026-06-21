@@ -5,6 +5,7 @@ import argparse
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
@@ -30,8 +31,6 @@ class Lookahead:
     """
     Lookahead Optimizer Wrapper (Zhang et al., 2019).
     Wraps an existing PyTorch optimizer to maintain 'slow weights' for improved generalization.
-    This wrapper inherits from object and delegates attribute/method requests to the underlying
-    optimizer via __getattr__, bypassing internal PyTorch 2.x hook requirements during .step().
     """
     def __init__(self, optimizer, k=5, alpha=0.5):
         self.optimizer = optimizer
@@ -42,8 +41,6 @@ class Lookahead:
         self.defaults = self.optimizer.defaults
         self.lk_counter = 0
         
-        # Save slow weights in an isolated dictionary to avoid polluting self.optimizer.state[p],
-        # which would cause AdamW to skip initializing its momentum buffers ('exp_avg', 'exp_avg_sq').
         self.slow_weights = {}
         for group in self.param_groups:
             for p in group["params"]:
@@ -59,9 +56,7 @@ class Lookahead:
                     if p.grad is None:
                         continue
                     slow_p = self.slow_weights[p]
-                    # Interpolation: slow_p = slow_p + alpha * (fast_p - slow_p)
                     slow_p.add_(self.alpha * (p.data - slow_p))
-                    # Sync fast weights to slow weights
                     p.data.copy_(slow_p)
                     
         return loss
@@ -70,16 +65,143 @@ class Lookahead:
         return getattr(self.optimizer, item)
 
 
+class SharpnessAwareMinimization:
+    """
+    Sharpness-Aware Minimization (SAM) and Scale-Invariant Adaptive SAM (ASAM).
+    An optimizer wrapper that executes double-forward/backward passes natively on MPS/CUDA GPU.
+    """
+    def __init__(self, optimizer, rho=0.5, eta=0.01, adaptive=True):
+        self.optimizer = optimizer
+        self.rho = rho
+        self.eta = eta
+        self.adaptive = adaptive
+        self.param_groups = self.optimizer.param_groups
+        self.defaults = self.optimizer.defaults
+        
+        # Save old weights in an isolated dictionary to avoid polluting self.optimizer.state[p],
+        # which would cause AdamW/Lion to skip initializing their momentum buffers.
+        self.old_weights = {}
+
+    @torch.no_grad()
+    def first_step(self, zero_grad=False):
+        grad_norm = self._grad_norm()
+        if grad_norm == 0:
+            return
+            
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                # Save the original weights in our isolated dictionary
+                self.old_weights[p] = p.data.clone()
+                
+                grad = p.grad.data
+                if self.adaptive:
+                    tw = torch.abs(p.data) + self.eta
+                    eps = grad * tw * tw
+                else:
+                    eps = grad.clone()
+                    
+                eps.mul_(self.rho / grad_norm)
+                p.data.add_(eps)
+                
+        if zero_grad:
+            self.optimizer.zero_grad()
+
+    @torch.no_grad()
+    def second_step(self, zero_grad=False):
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                if p in self.old_weights:
+                    p.data.copy_(self.old_weights[p])
+                    
+        self.optimizer.step()
+        
+        # Clean up old_weights to avoid holding references to gradients or weights indefinitely
+        self.old_weights.clear()
+        
+        if zero_grad:
+            self.optimizer.zero_grad()
+
+    def _grad_norm(self):
+        norm = 0.0
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+                if self.adaptive:
+                    tw = torch.abs(p.data) + self.eta
+                    norm += torch.sum((grad * tw) ** 2)
+                else:
+                    norm += torch.sum(grad ** 2)
+                    
+        norm = torch.sqrt(norm)
+        return norm.item()
+
+    def step(self, closure=None):
+        raise NotImplementedError("SAM/ASAM requires a dual-step training loop. Use first_step and second_step.")
+
+    def __getattr__(self, item):
+        return getattr(self.optimizer, item)
+
+
+class Lion(optim.Optimizer):
+    """
+    Lion Optimizer (Evo-discovered Sign Momentum Optimizer, Chen et al., 2023).
+    Saves memory and regularizes updates along consensus gradient dimensions.
+    """
+    def __init__(self, params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.0):
+        if not 0.0 <= lr:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if not 0.0 <= betas[0] < 1.0 or not 0.0 <= betas[1] < 1.0:
+            raise ValueError(f"Invalid beta parameters: {betas}")
+        defaults = dict(lr=lr, betas=betas, weight_decay=weight_decay)
+        super(Lion, self).__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            lr = group["lr"]
+            beta1, beta2 = group["betas"]
+            wd = group["weight_decay"]
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                grad = p.grad
+                
+                if wd != 0.0:
+                    p.add_(p, alpha=-lr * wd)
+
+                state = self.state[p]
+                if len(state) == 0:
+                    state["exp_avg"] = torch.zeros_like(p)
+
+                exp_avg = state["exp_avg"]
+
+                update = exp_avg * beta1 + grad * (1.0 - beta1)
+                p.add_(torch.sign(update), alpha=-lr)
+
+                exp_avg.mul_(beta2).add_(grad, alpha=1.0 - beta2)
+
+        return loss
+
+
 def get_transforms(image_size):
     """Defines high-generalization training (highly augmented) and test image transformations."""
     train_transform = transforms.Compose([
-        # Allow crops down to 20% of the image area to force local feature extraction
         transforms.RandomResizedCrop(image_size, scale=(0.2, 1.0), ratio=(3./4., 4./3.)),
         transforms.RandomHorizontalFlip(p=0.5),
-        # Apply Auto-tuned Wide Augmentations (Rotation, Shear, Solarize, Posterize, etc.)
         transforms.TrivialAugmentWide(),
         transforms.ToTensor(),
-        # Randomly erase small rectangular regions (acting as single-image CutMix)
         transforms.RandomErasing(p=0.2, scale=(0.02, 0.2), value='random'),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225])
@@ -158,17 +280,33 @@ def cutmix_data(x, y, alpha=1.0, device='cpu'):
     return mixed_x, y_a, y_b, lam
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device, scheduler=None, mixup_prob=0.3, cutmix_prob=0.3):
-    """Executes a single epoch of training with optional Mixup and CutMix batch-mixing and decoupled label smoothing."""
+def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, scheduler=None, 
+                    mixup_prob=0.3, cutmix_prob=0.3, progressive=False, use_sam=False, use_asam=False):
+    """Executes a single epoch of training with optional Mixup and CutMix batch-mixing, progressive resizing, and SAM/ASAM."""
     model.train()
     running_loss = 0.0
     correct = 0
     total = 0
     
+    # Progressive resizing target dimension
+    if progressive:
+        if epoch <= 15:
+            current_size = 128
+        elif epoch <= 30:
+            current_size = 192
+        else:
+            current_size = 224
+    else:
+        current_size = 224
+
     for inputs, labels in dataloader:
         inputs = inputs.to(device)
         labels = labels.to(device).unsqueeze(1) # Reshape to (batch_size, 1)
         
+        # GPU progressive resizing
+        if progressive and inputs.shape[-1] != current_size:
+            inputs = F.interpolate(inputs, size=(current_size, current_size), mode="bilinear", align_corners=False)
+
         # Decide probabilistically which mix augmentation to apply
         mixed = False
         if mixup_prob > 0.0 or cutmix_prob > 0.0:
@@ -180,20 +318,41 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, scheduler=N
                 mixed_inputs, labels_a, labels_b, lam = cutmix_data(inputs, labels, alpha=1.0, device=device)
                 mixed = True
             
-        optimizer.zero_grad()
+        raw_criterion = criterion.bce if hasattr(criterion, 'bce') else nn.BCEWithLogitsLoss()
         
-        if mixed:
-            logits = model(mixed_inputs)
-            # Decoupled Label Smoothing: use raw un-smoothed BCE loss for mixed batches
-            raw_criterion = criterion.bce if hasattr(criterion, 'bce') else nn.BCEWithLogitsLoss()
-            loss = lam * raw_criterion(logits, labels_a) + (1.0 - lam) * raw_criterion(logits, labels_b)
-        else:
-            logits = model(inputs)
-            loss = criterion(logits, labels)
+        if use_sam or use_asam:
+            # First forward-backward pass
+            optimizer.zero_grad()
+            if mixed:
+                logits = model(mixed_inputs)
+                loss = lam * raw_criterion(logits, labels_a) + (1.0 - lam) * raw_criterion(logits, labels_b)
+            else:
+                logits = model(inputs)
+                loss = criterion(logits, labels)
+            loss.backward()
+            optimizer.first_step(zero_grad=True)
             
-        loss.backward()
-        optimizer.step()
-        
+            # Second forward-backward pass (on perturbed parameters)
+            if mixed:
+                logits2 = model(mixed_inputs)
+                loss2 = lam * raw_criterion(logits2, labels_a) + (1.0 - lam) * raw_criterion(logits2, labels_b)
+            else:
+                logits2 = model(inputs)
+                loss2 = criterion(logits2, labels)
+            loss2.backward()
+            optimizer.second_step(zero_grad=True)
+        else:
+            # Standard single forward-backward pass
+            optimizer.zero_grad()
+            if mixed:
+                logits = model(mixed_inputs)
+                loss = lam * raw_criterion(logits, labels_a) + (1.0 - lam) * raw_criterion(logits, labels_b)
+            else:
+                logits = model(inputs)
+                loss = criterion(logits, labels)
+            loss.backward()
+            optimizer.step()
+            
         # Step OneCycleLR per batch
         if scheduler is not None and isinstance(scheduler, optim.lr_scheduler.OneCycleLR):
             scheduler.step()
@@ -201,7 +360,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, scheduler=N
         # Accumulate metrics
         running_loss += loss.item() * inputs.size(0)
         
-        # Approximate training accuracy (keeps execution extremely fast with no redundant forward pass)
+        # Approximate training accuracy (no redundant forward pass)
         with torch.no_grad():
             probs = torch.sigmoid(logits)
             preds = (probs >= 0.5).float()
@@ -229,14 +388,12 @@ def evaluate(model, dataloader, criterion, device, use_tta=True):
         inputs = inputs.to(device)
         labels = labels.to(device).unsqueeze(1)
         
-        # Standard forward pass
         logits = model(inputs)
         loss = criterion(logits, labels)
         
         running_loss += loss.item() * inputs.size(0)
         
         if use_tta:
-            # Horizontally flipped images: flip width dimension 3 of [B, C, H, W]
             inputs_flipped = torch.flip(inputs, dims=[3])
             logits_flipped = model(inputs_flipped)
             probs = 0.5 * (torch.sigmoid(logits) + torch.sigmoid(logits_flipped))
@@ -252,43 +409,91 @@ def evaluate(model, dataloader, criterion, device, use_tta=True):
     return epoch_loss, epoch_acc
 
 
+@torch.no_grad()
+def evaluate_advanced_tta(model, dataloader, criterion, device):
+    """Evaluates the model on validation/testing set with 6-View Multi-Scale TTA."""
+    model.eval()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+    
+    for inputs, labels in dataloader:
+        inputs = inputs.to(device)
+        labels = labels.to(device).unsqueeze(1)
+        
+        # Calculate standard loss (with base resolution)
+        logits = model(inputs)
+        loss = criterion(logits, labels)
+        running_loss += loss.item() * inputs.size(0)
+        
+        # 6-View Multi-Scale TTA
+        scales = [192, 224, 256]
+        all_probs = []
+        
+        for scale in scales:
+            if inputs.shape[-1] != scale:
+                inputs_scaled = F.interpolate(inputs, size=(scale, scale), mode="bilinear", align_corners=False)
+            else:
+                inputs_scaled = inputs
+                
+            logits_orig = model(inputs_scaled)
+            probs_orig = torch.sigmoid(logits_orig)
+            all_probs.append(probs_orig)
+            
+            inputs_flipped = torch.flip(inputs_scaled, dims=[3])
+            logits_flipped = model(inputs_flipped)
+            probs_flipped = torch.sigmoid(logits_flipped)
+            all_probs.append(probs_flipped)
+            
+        avg_probs = torch.stack(all_probs).mean(dim=0)
+        
+        preds = (avg_probs >= 0.5).float()
+        correct += (preds == labels).sum().item()
+        total += labels.size(0)
+        
+    epoch_loss = running_loss / total
+    epoch_acc = (correct / total) * 100.0
+    return epoch_loss, epoch_acc
+
+
 def main():
     import torch.optim.swa_utils as swa_utils
+    from torch.optim.swa_utils import SWALR
     
-    parser = argparse.ArgumentParser(description="PyTorch CBAM-EfficientNet - Cats vs Dogs (Option C)")
+    parser = argparse.ArgumentParser(description="PyTorch Hybrid CNN-Transformer v3 - Cats vs Dogs")
     parser.add_argument("--epochs", type=int, default=45, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=64, help="DataLoader batch size")
     parser.add_argument("--lr", type=float, default=0.0008, help="Peak or max learning rate")
     parser.add_argument("--weight-decay", type=float, default=0.05, help="L2 regularization / weight decay")
     parser.add_argument("--seed", type=int, default=42, help="Deterministic random seed")
-    parser.add_argument("--image-size", type=int, default=224, help="Input resolution (224x224 standard)")
+    parser.add_argument("--image-size", type=int, default=224, help="Input resolution")
     parser.add_argument("--data-dir", type=str, default="data/PetImages", help="Path to Cats & Dogs folder")
     parser.add_argument("--weights-path", type=str, default="pytorch_cnn/model.pth", help="Path to save weights")
-    parser.add_argument("--optimizer", type=str, default="lookahead", choices=["adamw", "lookahead"], help="Optimizer type")
-    parser.add_argument("--scheduler", type=str, default="cosine-restarts", choices=["onecycle", "cosine-restarts"], help="Learning rate scheduler")
+    parser.add_argument("--optimizer", type=str, default="asam", choices=["adamw", "lookahead", "sam", "asam", "lion"], help="Optimizer type")
+    parser.add_argument("--scheduler", type=str, default="cosine-restarts", choices=["onecycle", "cosine-restarts", "none"], help="Learning rate scheduler")
     parser.add_argument("--attention-type", type=str, default="se", choices=["se", "cbam"], help="Attention type in blocks")
     parser.add_argument("--swa", action="store_true", help="Enable Stochastic Weight Averaging (SWA)")
     parser.add_argument("--swa-start", type=int, default=35, help="Epoch to start SWA")
     parser.add_argument("--save-snapshots", action="store_true", help="Save snapshots of final epochs for ensembling")
+    parser.add_argument("--progressive", action="store_true", help="Enable progressive resizing curriculum")
     args = parser.parse_args()
     
     set_seed(args.seed)
     
-    # 1. Device Selection (MPS preferred on Apple Silicon Mac)
     if torch.backends.mps.is_available():
         device = torch.device("mps")
-        print("🚀 Using hardware-accelerated device: METAL GPU (MPS)")
+        print("🚀 Using hardware-accelerated device: METAL GPU (MPS)", flush=True)
     elif torch.cuda.is_available():
         device = torch.device("cuda")
-        print("🚀 Using hardware-accelerated device: NVIDIA GPU (CUDA)")
+        print("🚀 Using hardware-accelerated device: NVIDIA GPU (CUDA)", flush=True)
     else:
         device = torch.device("cpu")
-        print("⚠️ Using CPU device (slow)")
+        print("⚠️ Using CPU device (slow)", flush=True)
         
     if not os.path.exists(args.data_dir) and os.path.exists("../data/PetImages"):
         args.data_dir = "../data/PetImages"
         
-    print(f"Dataset target folder: {args.data_dir}")
+    print(f"Dataset target folder: {args.data_dir}", flush=True)
     
     # 2. Setup Data Loading & Splits
     train_transform, test_transform = get_transforms(args.image_size)
@@ -320,18 +525,33 @@ def main():
     # Using Label Smoothing BCE loss to improve final boundary calibration
     criterion = LabelSmoothingBCEWithLogitsLoss(smoothing=0.05)
     
-    # Define Optimizer
-    base_optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # Define Base Optimizer
+    if args.optimizer == "lion":
+        print("⚙️ Initializing Lion Optimizer...", flush=True)
+        base_optimizer = Lion(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    else:
+        base_optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        
+    # Wrap Optimizer if needed
+    use_sam = args.optimizer == "sam"
+    use_asam = args.optimizer == "asam"
+    
     if args.optimizer == "lookahead":
-        print("⚙️ Wrapping AdamW with Lookahead Optimizer (k=5, alpha=0.5)...")
+        print("⚙️ Wrapping AdamW with Lookahead Optimizer (k=5, alpha=0.5)...", flush=True)
         optimizer = Lookahead(base_optimizer, k=5, alpha=0.5)
+    elif use_sam:
+        print("⚙️ Wrapping AdamW with SAM Optimizer (rho=0.05)...", flush=True)
+        optimizer = SharpnessAwareMinimization(base_optimizer, rho=0.05, adaptive=False)
+    elif use_asam:
+        print("⚙️ Wrapping AdamW with ASAM Optimizer (rho=0.5, scale-invariant)...", flush=True)
+        optimizer = SharpnessAwareMinimization(base_optimizer, rho=0.5, adaptive=True)
     else:
         optimizer = base_optimizer
         
     # Define Scheduler
     if args.scheduler == "onecycle":
         scheduler = optim.lr_scheduler.OneCycleLR(
-            base_optimizer if args.optimizer == "lookahead" else optimizer,
+            base_optimizer if args.optimizer in ["lookahead", "sam", "asam"] else optimizer,
             max_lr=args.lr,
             steps_per_epoch=len(train_loader),
             epochs=args.epochs,
@@ -341,9 +561,8 @@ def main():
             anneal_strategy='cos'
         )
     elif args.scheduler == "cosine-restarts":
-        # Cycle 1 = 15 epochs, Cycle 2 = 30 epochs (doubling cycle length). Total = 45 epochs.
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            base_optimizer if args.optimizer == "lookahead" else optimizer,
+            base_optimizer if args.optimizer in ["lookahead", "sam", "asam"] else optimizer,
             T_0=15,
             T_mult=2,
             eta_min=1e-6
@@ -351,36 +570,43 @@ def main():
     else:
         scheduler = None
     
+    # Decoupled SWA Scheduler
+    swa_scheduler = None
     if args.swa:
-        print("⚙️ Initializing Stochastic Weight Averaging (SWA) wrapper...")
+        print("⚙️ Initializing Stochastic Weight Averaging (SWA) wrapper...", flush=True)
         swa_model = swa_utils.AveragedModel(model)
+        swa_scheduler = SWALR(
+            base_optimizer if args.optimizer in ["lookahead", "sam", "asam"] else optimizer,
+            swa_lr=1.5e-4,
+            anneal_epochs=3,
+            anneal_strategy="cos"
+        )
     
     print("\n---------------------- MODEL HYPERPARAMETERS ----------------------")
-    print(f"  • Device:          {device.type.upper()}")
-    print(f"  • Resolution:      {args.image_size} x {args.image_size} (RGB)")
-    print(f"  • Model Params:    {sum(p.numel() for p in model.parameters()):,}")
-    print(f"  • Attention:       {args.attention_type.upper()}")
-    print(f"  • Optimizer:       {args.optimizer.upper()}")
-    print(f"  • Scheduler:       {args.scheduler.upper()}")
-    print(f"  • Batch Size:      {args.batch_size}")
-    print(f"  • Peak Learning:   {args.lr}")
-    print(f"  • Weight Decay:    {args.weight_decay}")
-    print(f"  • Seed:            {args.seed}")
-    print(f"  • Epochs:          {args.epochs}")
+    print(f"  • Device:          {device.type.upper()}", flush=True)
+    print(f"  • Resolution:      {args.image_size} x {args.image_size} (RGB)", flush=True)
+    print(f"  • Model Params:    {sum(p.numel() for p in model.parameters()):,}", flush=True)
+    print(f"  • Attention:       {args.attention_type.upper()}", flush=True)
+    print(f"  • Optimizer:       {args.optimizer.upper()}", flush=True)
+    print(f"  • Scheduler:       {args.scheduler.upper()}", flush=True)
+    print(f"  • Batch Size:      {args.batch_size}", flush=True)
+    print(f"  • Peak Learning:   {args.lr}", flush=True)
+    print(f"  • Weight Decay:    {args.weight_decay}", flush=True)
+    print(f"  • Seed:            {args.seed}", flush=True)
+    print(f"  • Epochs:          {args.epochs}", flush=True)
+    print(f"  • Progressive:     {args.progressive}", flush=True)
     if args.swa:
-        print(f"  • SWA Enabled:     True (Starts at epoch {args.swa_start})")
+        print(f"  • SWA Enabled:     True (Starts at epoch {args.swa_start})", flush=True)
     if args.save_snapshots:
-        print(f"  • Snapshot Ensem.: True (Saves snapshots of final epochs)")
+        print(f"  • Snapshot Ensem.: True (Saves snapshots of final epochs)", flush=True)
     print("-------------------------------------------------------------------\n")
     
-    # Metric tracking
     history = {
         "train_loss": [], "train_acc": [],
         "test_loss": [], "test_acc": []
     }
     best_test_acc = 0.0
     
-    # Table header
     print("+" + "-"*96 + "+")
     print("| Epoch    | Train Loss | Train Acc | Test Loss  | Test Acc   | Learning Rate | Epoch Time (sec) |")
     print("+" + "-"*96 + "+")
@@ -388,8 +614,7 @@ def main():
     for epoch in range(1, args.epochs + 1):
         start_time = time.time()
         
-        # Get learning rate at start of epoch
-        current_lr = base_optimizer.param_groups[0]['lr'] if args.optimizer == "lookahead" else optimizer.param_groups[0]['lr']
+        current_lr = base_optimizer.param_groups[0]['lr'] if args.optimizer in ["lookahead", "sam", "asam"] else optimizer.param_groups[0]['lr']
         
         # Cooldown schedule: Disable Mixup/CutMix in the first 2 epochs and last 5 epochs
         if epoch <= 2 or epoch > (args.epochs - 5):
@@ -398,16 +623,18 @@ def main():
             mix_prob = 0.3
             
         train_loss, train_acc = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, 
-            scheduler=scheduler, mixup_prob=mix_prob, cutmix_prob=mix_prob
+            model, train_loader, criterion, optimizer, device, epoch,
+            scheduler=scheduler, mixup_prob=mix_prob, cutmix_prob=mix_prob,
+            progressive=args.progressive, use_sam=use_sam, use_asam=use_asam
         )
         
-        # Evaluate with Test-Time Augmentation (TTA)
-        test_loss, test_acc = evaluate(model, test_loader, criterion, device, use_tta=True)
+        # Evaluate with 6-View Multi-Scale TTA
+        test_loss, test_acc = evaluate_advanced_tta(model, test_loader, criterion, device)
         
-        # Step epoch-level schedulers (CosineAnnealingWarmRestarts is stepped at epoch boundary)
+        # Step epoch-level schedulers (except during SWA constant phase)
         if scheduler is not None and args.scheduler == "cosine-restarts":
-            scheduler.step()
+            if not args.swa or epoch < args.swa_start:
+                scheduler.step()
             
         elapsed = time.time() - start_time
         
@@ -418,7 +645,6 @@ def main():
         
         print(f"| Epoch {epoch:02d} | {train_loss:10.4f} | {train_acc:8.2f}% | {test_loss:10.4f} | {test_acc:9.2f}% | {current_lr:13.6f} | {elapsed:15.1f}s |", flush=True)
         
-        # Save weights of best epoch
         if test_acc > best_test_acc:
             best_test_acc = test_acc
             torch.save(model.state_dict(), args.weights_path)
@@ -427,6 +653,8 @@ def main():
         if args.swa and epoch >= args.swa_start:
             swa_model.update_parameters(model)
             print(f"⚙️ SWA: Averaged model weights at epoch {epoch}", flush=True)
+            if swa_scheduler is not None:
+                swa_scheduler.step()
             
         # Save snapshots of final epochs
         if args.save_snapshots and epoch > (args.epochs - 3):
@@ -435,7 +663,7 @@ def main():
             print(f"📸 Saved snapshot checkpoint: {snapshot_path}", flush=True)
             
     print("+" + "-"*96 + "+")
-    print(f"✓ Training complete! Best Validation Accuracy achieved (with TTA): {best_test_acc:.2f}%")
+    print(f"✓ Training complete! Best Validation Accuracy achieved (with 6-View TTA): {best_test_acc:.2f}%")
     print(f"✓ Model weights saved to: {args.weights_path}")
     
     # SWA finalization
@@ -444,13 +672,11 @@ def main():
         swa_model = swa_model.to(device)
         swa_utils.update_bn(train_loader, swa_model, device)
         
-        # Evaluate SWA model
-        swa_test_loss, swa_test_acc = evaluate(swa_model, test_loader, criterion, device, use_tta=True)
+        swa_test_loss, swa_test_acc = evaluate_advanced_tta(swa_model, test_loader, criterion, device)
         print("+" + "-"*96 + "+")
-        print(f"🌟 SWA Model Test Loss: {swa_test_loss:.4f} | Test Acc (with TTA): {swa_test_acc:.2f}%")
+        print(f"🌟 SWA Model Test Loss: {swa_test_loss:.4f} | Test Acc (with 6-View TTA): {swa_test_acc:.2f}%")
         print("+" + "-"*96 + "+")
         
-        # Save SWA weights
         swa_weights_path = args.weights_path.replace(".pth", "_swa.pth")
         torch.save(swa_model.module.state_dict() if hasattr(swa_model, 'module') else swa_model.state_dict(), swa_weights_path)
         print(f"✓ SWA model weights saved to: {swa_weights_path}")
@@ -459,7 +685,6 @@ def main():
     epochs_range = range(1, args.epochs + 1)
     plt.figure(figsize=(12, 5))
     
-    # Loss subplot
     plt.subplot(1, 2, 1)
     plt.plot(epochs_range, history["train_loss"], label="Train Loss (Mixed)", color="#ff7f0e", lw=2)
     plt.plot(epochs_range, history["test_loss"], label="Test Loss (Clean)", color="#1f77b4", lw=2)
@@ -469,10 +694,9 @@ def main():
     plt.grid(True, linestyle="--", alpha=0.6)
     plt.legend()
     
-    # Accuracy subplot
     plt.subplot(1, 2, 2)
     plt.plot(epochs_range, history["train_acc"], label="Train Accuracy (Approx)", color="#2ca02c", lw=2)
-    plt.plot(epochs_range, history["test_acc"], label="Test Accuracy (with TTA)", color="#d62728", lw=2)
+    plt.plot(epochs_range, history["test_acc"], label="Test Accuracy (with 6-View TTA)", color="#d62728", lw=2)
     plt.xlabel("Epoch")
     plt.ylabel("Accuracy (%)")
     plt.title("Training & Testing Accuracy")

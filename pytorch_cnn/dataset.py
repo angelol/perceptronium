@@ -32,16 +32,32 @@ class CatsAndDogsDataset(Dataset):
         
         # Partition paths deterministically matching the Rust offsets
         if self.split == "train":
-            # First limit_train_per_class valid images per category
-            self.paths = (
-                cat_paths[:limit_train_per_class] + 
-                dog_paths[:limit_train_per_class]
-            )
-            # Label 0 for Cat, 1 for Dog
-            self.labels = (
-                [0.0] * len(cat_paths[:limit_train_per_class]) + 
-                [1.0] * len(dog_paths[:limit_train_per_class])
-            )
+            # Check if cleaned metadata exists
+            metadata_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cleaned_dataset_metadata.json")
+            if os.path.exists(metadata_path):
+                import json
+                print(f"✓ Found cleaned dataset metadata at: {metadata_path}")
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+                self.paths = metadata["clean_train_paths"]
+                self.labels = []
+                for p in self.paths:
+                    parent_dir = os.path.basename(os.path.dirname(p))
+                    if parent_dir.lower() == "dog":
+                        self.labels.append(1.0)
+                    else:
+                        self.labels.append(0.0)
+            else:
+                # First limit_train_per_class valid images per category
+                self.paths = (
+                    cat_paths[:limit_train_per_class] + 
+                    dog_paths[:limit_train_per_class]
+                )
+                # Label 0 for Cat, 1 for Dog
+                self.labels = (
+                    [0.0] * len(cat_paths[:limit_train_per_class]) + 
+                    [1.0] * len(dog_paths[:limit_train_per_class])
+                )
         elif self.split in ["test", "val", "validation"]:
             # Next limit_test_per_class valid images (skip first limit_train_per_class)
             cat_test = cat_paths[limit_train_per_class : limit_train_per_class + limit_test_per_class]

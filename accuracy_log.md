@@ -10,10 +10,12 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 | :---: | :--- | :--- | :--- | :---: | :---: | :--- | :--- |
 | **1** | **CBAM-EfficientNet v2 (SWA)** | Depthwise Attention Bottleneck v2 | ~8.69M | **93.30%** | **92.35%** | Minimal | Multi-block MBConv stage, Lookahead optimizer, Cosine Warm Restarts, TrivialAugment, SWA & Temperature Scaling |
 | **2** | **Option A+ (Residual CNN)** | Residual feedforward CNN | ~4.91M | **87.60%** | **87.60%** | Minimal | Skip connections, RandomResizedCrop, Cosine Annealing |
-| **3** | **Option C (CBAM-EfficientNet)** | Depthwise Attention Bottleneck | ~1.28M | **84.90%** | **84.90%** | Negative (None) | CBAM Attention, MBConv stages, OneCycleLR, Mixup/CutMix |
-| **4** | **Option A (Custom CNN)** | Standard feedforward CNN | ~441K | **76.15%** | **74.50%** | Minimal | AdaptiveAvgPool, BatchNorm, Dropout |
-| **5** | **Rust CNN Baseline** | From-scratch CPU CNN | ~924K | **68.35%** | **66.90%** | Moderate | 2 Conv, 2 Pool, 1 Dense, horizontal flips in Rust |
-| **6** | **Rust MLP Baseline** | From-scratch CPU MLP | ~131K | **~50.00%** | **~50.00%** | High Bias | Fully connected nodes, no spatial representation |
+| **3** | **CBAM-EfficientNet v3 (SWA)** | CBAM-EfficientNet v3 (CNN-Transformer Hybrid) | ~13.88M | **87.30%** | **86.40%** | Negative (Underfitting) | Lookahead wrapper, 2D MHSA, Fused-MBConv, SWA, Progressive resizing |
+| **4** | **Option C (CBAM-EfficientNet)** | Depthwise Attention Bottleneck | ~1.28M | **84.90%** | **84.90%** | Negative (None) | CBAM Attention, MBConv stages, OneCycleLR, Mixup/CutMix |
+| **5** | **Option A (Custom CNN)** | Standard feedforward CNN | ~441K | **76.15%** | **74.50%** | Minimal | AdaptiveAvgPool, BatchNorm, Dropout |
+| **6** | **Rust CNN Baseline** | From-scratch CPU CNN | ~924K | **68.35%** | **66.90%** | Moderate | 2 Conv, 2 Pool, 1 Dense, horizontal flips in Rust |
+| **7** | **Rust MLP Baseline** | From-scratch CPU MLP | ~131K | **~50.00%** | **~50.00%** | High Bias | Fully connected nodes, no spatial representation |
+| **8** | **CBAM-EfficientNet v3 (ASAM)** | CBAM-EfficientNet v3 (CNN-Transformer Hybrid) | ~13.88M | **50.00%** | **50.00%** | Failed Run | ASAM (rho=0.5) destroyed weight initialization |
 
 ---
 
@@ -135,3 +137,40 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 * **Overfitting / Generalization Analysis:**
   * **Result:** Extremely high bias (cannot learn).
   * **Insights:** Flattening raw pixels directly into a fully connected layer completely discards spatial invariance, preventing the model from resolving complex anatomical patterns.
+
+---
+
+### Run 7: CBAM-EfficientNet v3 (ASAM - Failed Run)
+* **Date:** June 21, 2026
+* **Hardware Device:** Metal GPU (MPS)
+* **Input Resolution:** $224 \times 224$ RGB
+* **Architecture Highlights:**
+  * Custom CBAM-EfficientNet v3 (~13.88M parameters) combining fused early stages and late standard stage.
+  * Incorporates 2D Multi-Head Self-Attention (MHSA) at the deep feature extraction layer.
+* **Hyperparameters & Regularization:**
+  * **Optimizer:** ASAM ($\rho = 0.5$, adaptive) over base AdamW.
+  * **Scheduler:** Cosine Warm Restarts.
+  * **SWA & Snapshots:** SWA enabled (start epoch 35), snapshot checkpoints of final epochs.
+* **Best Test Accuracy:** **`50.00%`** (Stuck at coin-toss)
+* **Overfitting / Generalization Analysis:**
+  * **Result:** Complete failure to learn.
+  * **Insights:** With weights trained from scratch, the scale-invariant perturbation computed by ASAM under a high radius of $\rho = 0.5$ causes massive weight changes (up to 50-100% of their actual magnitude) in early steps. This completely scrambled the model's initialization, ruined gradient backpropagation, and locked the model in a random-guess state.
+
+---
+
+### Run 8: CBAM-EfficientNet v3 (Lookahead-AdamW)
+* **Date:** June 21, 2026
+* **Hardware Device:** Metal GPU (MPS)
+* **Input Resolution:** $224 \times 224$ RGB (Progressive Resizing curriculum: 15 epochs at $128 \times 128$, 15 epochs at $192 \times 192$, and 15 epochs at $224 \times 224$)
+* **Architecture Highlights:**
+  * Custom CBAM-EfficientNet v3 (~13.88M parameters) combining fused early stages, late standard stage, and a 2D Multi-Head Self-Attention layer.
+* **Hyperparameters & Regularization:**
+  * **Optimizer:** Lookahead wrapper over AdamW ($k=5, \alpha=0.5$), peak learning rate `5e-4`, weight decay `0.05`.
+  * **Scheduler:** Cosine Warm Restarts.
+  * **Data Regularization:** Mixup, Cutmix, TrivialAugmentWide, RandomErasing, linearly-decaying DropPath.
+  * **SWA & Snapshots:** SWA enabled (start epoch 35), snapshot checkpoints of final epochs.
+* **Best Test Accuracy:** **`87.30%`** (Epoch 42, 6-View TTA)
+* **SWA Test Accuracy:** **`86.40%`** (with 6-View TTA, Test Loss: `0.3662`)
+* **Overfitting / Generalization Analysis:**
+  * **Result:** Severe underfitting (approximate Train Acc `84.28%` vs Test Acc `85.40%` at Epoch 45).
+  * **Insights:** Lookahead resolved the learning failure entirely, leading to highly stable and smooth loss curves. However, 45 epochs was not nearly enough for a 13.8M parameters model trained entirely from scratch under such heavy regularization and progressive resizing (which restricted full-resolution training to only the final 15 epochs). The model did not overfit at all and has substantial untapped capacity. For future runs, we should extend epochs to 100+, increase the peak learning rate slightly, or train at full resolution to extract this capacity.

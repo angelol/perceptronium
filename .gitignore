@@ -26,3 +26,9 @@
 # System Files
 .DS_Store
 **/.DS_Store
+
+# CoreML and Exported Models
+**/*.mlpackage/
+**/*.mlpackage
+**/*.mlmodel
+

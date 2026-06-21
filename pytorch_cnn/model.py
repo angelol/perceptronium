@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 def drop_path(x, drop_prob: float = 0.0, training: bool = False):
     """
@@ -25,6 +26,26 @@ class DropPath(nn.Module):
         return drop_path(x, self.drop_prob, self.training)
 
 
+class LayerNorm2d(nn.Module):
+    """
+    LayerNorm for 2D image inputs (channels-first, channel-wise).
+    Computes mean/variance along the channel dimension only, i.e., at each pixel.
+    """
+    def __init__(self, num_features, eps=1e-6):
+        super(LayerNorm2d, self).__init__()
+        self.weight = nn.Parameter(torch.ones(num_features))
+        self.bias = nn.Parameter(torch.zeros(num_features))
+        self.eps = eps
+
+    def forward(self, x):
+        # x shape: (B, C, H, W)
+        mean = x.mean(dim=1, keepdim=True)
+        var = x.var(dim=1, keepdim=True, unbiased=False)
+        x = (x - mean) / torch.sqrt(var + self.eps)
+        x = x * self.weight.view(1, -1, 1, 1) + self.bias.view(1, -1, 1, 1)
+        return x
+
+
 class SqueezeExcitation(nn.Module):
     """
     Squeeze-and-Excitation (SE) Block.
@@ -37,7 +58,7 @@ class SqueezeExcitation(nn.Module):
         reduced_planes = max(1, in_planes // ratio)
         self.fc = nn.Sequential(
             nn.Conv2d(in_planes, reduced_planes, 1, bias=True),
-            nn.SiLU(inplace=True),
+            nn.Mish(),
             nn.Conv2d(reduced_planes, in_planes, 1, bias=True),
             nn.Sigmoid()
         )
@@ -48,7 +69,7 @@ class SqueezeExcitation(nn.Module):
 
 class ChannelAttention(nn.Module):
     """
-    Upgraded Channel Attention (CBAM) using SiLU activation for better gradient flow.
+    Upgraded Channel Attention (CBAM) using Mish activation for better gradient flow.
     """
     def __init__(self, in_planes, ratio=16):
         super(ChannelAttention, self).__init__()
@@ -57,7 +78,7 @@ class ChannelAttention(nn.Module):
            
         self.fc = nn.Sequential(
             nn.Conv2d(in_planes, in_planes // ratio, 1, bias=False),
-            nn.SiLU(inplace=True),
+            nn.Mish(),
             nn.Conv2d(in_planes // ratio, in_planes, 1, bias=False)
         )
         self.sigmoid = nn.Sigmoid()
@@ -104,13 +125,77 @@ class CBAM(nn.Module):
         return x
 
 
+class FusedMBConvBlock(nn.Module):
+    """
+    Fused Inverted Bottleneck Block (fuses 1x1 expansion and 3x3 depthwise into a single 3x3 conv).
+    Commonly used in early stages of EfficientNetV2 for higher GPU arithmetic intensity.
+    """
+    def __init__(self, in_channels, out_channels, stride=1, expand_ratio=4, 
+                 kernel_size=3, attention_type="se", drop_prob=0.0,
+                 norm_layer=nn.BatchNorm2d, act_layer=nn.Mish):
+        super(FusedMBConvBlock, self).__init__()
+        self.stride = stride
+        self.use_residual = (self.stride == 1 and in_channels == out_channels)
+        mid_channels = in_channels * expand_ratio
+        padding = kernel_size // 2
+        
+        # Fused convolution combining expansion and spatial learning
+        if expand_ratio != 1:
+            self.fused_conv = nn.Sequential(
+                nn.Conv2d(in_channels, mid_channels, kernel_size=kernel_size, 
+                          stride=stride, padding=padding, bias=False),
+                norm_layer(mid_channels),
+                act_layer()
+            )
+        else:
+            # If no expansion, do a regular standard 3x3 conv
+            self.fused_conv = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size,
+                          stride=stride, padding=padding, bias=False),
+                norm_layer(out_channels),
+                act_layer()
+            )
+            mid_channels = out_channels
+            
+        # Attention Layer
+        if attention_type.lower() == "se":
+            self.attention = SqueezeExcitation(mid_channels, ratio=16)
+        elif attention_type.lower() == "cbam":
+            self.attention = CBAM(mid_channels, reduction=16)
+        else:
+            self.attention = nn.Identity()
+            
+        # Projection convolution (only if expand_ratio != 1)
+        if expand_ratio != 1:
+            self.project_conv = nn.Sequential(
+                nn.Conv2d(mid_channels, out_channels, kernel_size=1, bias=False),
+                norm_layer(out_channels)
+            )
+        else:
+            self.project_conv = nn.Identity()
+            
+        # Stochastic Depth / DropPath (applied only on residual connections)
+        self.drop_path = DropPath(drop_prob) if self.use_residual and drop_prob > 0.0 else nn.Identity()
+
+    def forward(self, x):
+        out = self.fused_conv(x)
+        out = self.attention(out)
+        out = self.project_conv(out)
+        
+        if self.use_residual:
+            return x + self.drop_path(out)
+        return out
+
+
 class MBConvBlock(nn.Module):
     """
     Upgraded Inverted Bottleneck Block with optional Squeeze-and-Excitation (SE)
-    or CBAM Attention, Stochastic Depth (DropPath), and variable kernel size.
+    or CBAM Attention, Stochastic Depth (DropPath), variable kernel size,
+    and customizable normalization/activation functions (supporting LayerNorm2d and Mish).
     """
     def __init__(self, in_channels, out_channels, stride=1, expand_ratio=4, 
-                 kernel_size=3, attention_type="se", drop_prob=0.0):
+                 kernel_size=3, attention_type="se", drop_prob=0.0,
+                 norm_layer=nn.BatchNorm2d, act_layer=nn.Mish):
         super(MBConvBlock, self).__init__()
         self.stride = stride
         self.use_residual = (self.stride == 1 and in_channels == out_channels)
@@ -121,8 +206,8 @@ class MBConvBlock(nn.Module):
         if expand_ratio != 1:
             self.expand_conv = nn.Sequential(
                 nn.Conv2d(in_channels, mid_channels, kernel_size=1, bias=False),
-                nn.BatchNorm2d(mid_channels),
-                nn.SiLU(inplace=True)
+                norm_layer(mid_channels),
+                act_layer()
             )
         else:
             self.expand_conv = nn.Identity()
@@ -131,8 +216,8 @@ class MBConvBlock(nn.Module):
         self.depthwise_conv = nn.Sequential(
             nn.Conv2d(mid_channels, mid_channels, kernel_size=kernel_size, 
                       stride=stride, padding=padding, groups=mid_channels, bias=False),
-            nn.BatchNorm2d(mid_channels),
-            nn.SiLU(inplace=True)
+            norm_layer(mid_channels),
+            act_layer()
         )
         
         # 3. Attention Layer
@@ -146,10 +231,10 @@ class MBConvBlock(nn.Module):
         # 4. Pointwise Linear Projection: 1x1 Conv
         self.project_conv = nn.Sequential(
             nn.Conv2d(mid_channels, out_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels)
+            norm_layer(out_channels)
         )
         
-        # 5. Stochastic Depth / DropPath (only applied on residual connections)
+        # 5. Stochastic Depth / DropPath (applied only on residual connections)
         self.drop_path = DropPath(drop_prob) if self.use_residual and drop_prob > 0.0 else nn.Identity()
 
     def forward(self, x):
@@ -163,39 +248,104 @@ class MBConvBlock(nn.Module):
         return out
 
 
+class MHSA2D(nn.Module):
+    """
+    2D Multi-Head Self-Attention (MHSA) with learnable absolute positional embeddings.
+    Designed for small spatial dimensions (e.g. 7x7 grid) at the end of Stage 5.
+    """
+    def __init__(self, channels, width=7, height=7, num_heads=4, dropout=0.1):
+        super(MHSA2D, self).__init__()
+        self.channels = channels
+        self.width = width
+        self.height = height
+        self.num_heads = num_heads
+        self.head_dim = channels // num_heads
+        assert self.head_dim * num_heads == channels, "channels must be divisible by num_heads"
+        
+        self.qkv_conv = nn.Conv2d(channels, channels * 3, kernel_size=1, bias=False)
+        self.proj_conv = nn.Conv2d(channels, channels, kernel_size=1, bias=True)
+        self.attn_dropout = nn.Dropout(dropout)
+        self.proj_dropout = nn.Dropout(dropout)
+        
+        # Learnable 2D absolute position embeddings: shape (1, channels, height, width)
+        self.pos_embed = nn.Parameter(torch.zeros(1, channels, height, width))
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        
+    def forward(self, x):
+        # x shape: (B, C, H, W)
+        B, C, H, W = x.shape
+        
+        # Interpolate positional embeddings if incoming shape does not match (self.height, self.width)
+        if H != self.height or W != self.width:
+            pos_embed = F.interpolate(
+                self.pos_embed, size=(H, W), mode="bilinear", align_corners=False
+            )
+        else:
+            pos_embed = self.pos_embed
+            
+        x = x + pos_embed
+        
+        # Compute Queries, Keys, Values: shape (B, 3*C, H, W)
+        qkv = self.qkv_conv(x)
+        q, k, v = torch.chunk(qkv, 3, dim=1) # each is (B, C, H, W)
+        
+        # Reshape to (B, num_heads, head_dim, H*W) and transpose to (B, num_heads, H*W, head_dim)
+        N = H * W
+        q = q.view(B, self.num_heads, self.head_dim, N).transpose(-1, -2) # (B, num_heads, N, head_dim)
+        k = k.view(B, self.num_heads, self.head_dim, N).transpose(-1, -2) # (B, num_heads, N, head_dim)
+        v = v.view(B, self.num_heads, self.head_dim, N).transpose(-1, -2) # (B, num_heads, N, head_dim)
+        
+        # Scaled dot-product attention
+        # Query: (B, h, N, d), Key: (B, h, N, d) -> Attn matrix: (B, h, N, N)
+        attn = (q @ k.transpose(-1, -2)) * (self.head_dim ** -0.5)
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_dropout(attn)
+        
+        # Attn: (B, h, N, N), Value: (B, h, N, d) -> Output: (B, h, N, d)
+        out = attn @ v
+        
+        # Transpose back to (B, num_heads, head_dim, N) and reshape to (B, C, H, W)
+        out = out.transpose(-1, -2).contiguous().view(B, C, H, W)
+        
+        # Projection
+        out = self.proj_conv(out)
+        out = self.proj_dropout(out)
+        return out
+
+
 class CBAM_EfficientNet(nn.Module):
     """
-    Upgraded CBAM-EfficientNet (v2): A deep, from-scratch vision CNN featuring
-    multi-block MBConv stage configurations, Squeeze-and-Excitation / upgraded CBAM attention,
-    5x5 depthwise kernels, linearly-decaying Stochastic Depth, and a 1x1 pre-classifier head projection.
+    Upgraded CBAM-EfficientNet (v3): A deep, from-scratch vision hybrid CNN-Transformer featuring
+    fused MBConv stages (Stages 1-3), standard MBConv stages with LayerNorm2d and Mish (Stages 4-5),
+    2D Multi-Head Self-Attention, and a robust pre-classifier LayerNorm2d head.
     """
     def __init__(self, attention_type="se", max_drop_path=0.2):
         super(CBAM_EfficientNet, self).__init__()
         
-        # Stem: Input (3 x 224 x 224) -> Output (32 x 112 x 112)
+        # Stem: Input (3 x 224 x 224) -> Output (40 x 112 x 112)
         self.stem = nn.Sequential(
-            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(32),
-            nn.SiLU(inplace=True)
+            nn.Conv2d(in_channels=3, out_channels=40, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(40),
+            nn.Mish()
         )
         
-        # Define MBConv configurations
-        # Format: (in_channels, out_channels, num_repeats, stride, expand_ratio, kernel_size)
+        # Define MBConv / Fused configurations
+        # Format: (in_channels, out_channels, num_repeats, stride, expand_ratio, kernel_size, block_type, norm_layer)
         self.stage_configs = [
-            (32, 32, 1, 1, 1, 3),   # Stage 1
-            (32, 64, 2, 2, 4, 3),   # Stage 2
-            (64, 128, 3, 2, 4, 3),  # Stage 3
-            (128, 256, 3, 2, 4, 5), # Stage 4: using 5x5 depthwise filters
-            (256, 512, 2, 2, 6, 5)  # Stage 5: using 5x5 depthwise filters
+            (40, 40, 1, 1, 1, 3, "fused", nn.BatchNorm2d),      # Stage 1
+            (40, 80, 2, 2, 4, 3, "fused", nn.BatchNorm2d),      # Stage 2
+            (80, 160, 3, 2, 4, 3, "fused", nn.BatchNorm2d),     # Stage 3
+            (160, 320, 4, 2, 4, 5, "standard", LayerNorm2d),    # Stage 4
+            (320, 480, 2, 2, 6, 5, "standard", LayerNorm2d)     # Stage 5
         ]
         
-        # Calculate total number of MBConv blocks for Stochastic Depth scaling
+        # Calculate total number of blocks for Stochastic Depth scaling
         total_blocks = sum(cfg[2] for cfg in self.stage_configs)
         block_idx = 0
         
         # Build stages dynamically
         stages = []
-        for in_c, out_c, repeats, stride, expand, kernel in self.stage_configs:
+        for in_c, out_c, repeats, stride, expand, kernel, b_type, norm_layer in self.stage_configs:
             stage_blocks = []
             for i in range(repeats):
                 # Only downsample/change channels in the first block of the stage
@@ -205,27 +355,47 @@ class CBAM_EfficientNet(nn.Module):
                 # Linearly decaying drop path probability
                 drop_prob = max_drop_path * (block_idx / (total_blocks - 1)) if total_blocks > 1 else 0.0
                 
-                stage_blocks.append(
-                    MBConvBlock(
-                        in_channels=b_in_c,
-                        out_channels=out_c,
-                        stride=b_stride,
-                        expand_ratio=expand,
-                        kernel_size=kernel,
-                        attention_type=attention_type,
-                        drop_prob=drop_prob
+                if b_type == "fused":
+                    stage_blocks.append(
+                        FusedMBConvBlock(
+                            in_channels=b_in_c,
+                            out_channels=out_c,
+                            stride=b_stride,
+                            expand_ratio=expand,
+                            kernel_size=kernel,
+                            attention_type=attention_type,
+                            drop_prob=drop_prob,
+                            norm_layer=norm_layer,
+                            act_layer=nn.Mish
+                        )
                     )
-                )
+                else:
+                    stage_blocks.append(
+                        MBConvBlock(
+                            in_channels=b_in_c,
+                            out_channels=out_c,
+                            stride=b_stride,
+                            expand_ratio=expand,
+                            kernel_size=kernel,
+                            attention_type=attention_type,
+                            drop_prob=drop_prob,
+                            norm_layer=norm_layer,
+                            act_layer=nn.Mish
+                        )
+                    )
                 block_idx += 1
             stages.append(nn.Sequential(*stage_blocks))
             
         self.stages = nn.Sequential(*stages)
         
-        # Pre-classifier Head Projection: 512 x 7 x 7 -> 1280 x 7 x 7
+        # 2D Multi-Head Self-Attention at the end of Stage 5 (480 channels, 7x7 spatial layout)
+        self.mhsa = MHSA2D(channels=480, width=7, height=7, num_heads=4, dropout=0.1)
+        
+        # Pre-classifier Head Projection: 480 x 7 x 7 -> 1280 x 7 x 7
         self.head_conv = nn.Sequential(
-            nn.Conv2d(in_channels=512, out_channels=1280, kernel_size=1, bias=False),
-            nn.BatchNorm2d(1280),
-            nn.SiLU(inplace=True)
+            nn.Conv2d(in_channels=480, out_channels=1280, kernel_size=1, bias=False),
+            LayerNorm2d(1280),
+            nn.Mish()
         )
         
         # Global Avg Pooling: collapses spatial dimensions to 1x1
@@ -240,6 +410,7 @@ class CBAM_EfficientNet(nn.Module):
     def forward(self, x):
         x = self.stem(x)
         x = self.stages(x)
+        x = self.mhsa(x)
         x = self.head_conv(x)
         x = self.global_pool(x)
         x = torch.flatten(x, start_dim=1)
@@ -250,12 +421,12 @@ class CBAM_EfficientNet(nn.Module):
 # Backwards compatibility aliases
 CustomCNN = CBAM_EfficientNet
 ResidualCNN = CBAM_EfficientNet
-MBConvCBAM = MBConvBlock # Alias for compatibility with code imports
+MBConvCBAM = MBConvBlock
 
 
 if __name__ == "__main__":
     # Dimension verification round-trip test
-    print("Testing Upgraded CBAM_EfficientNet dimensions with a dummy batch...")
+    print("Testing Upgraded CBAM_EfficientNet v3 dimensions with a dummy batch...")
     
     # Test with SE attention (default)
     model_se = CBAM_EfficientNet(attention_type="se")
@@ -265,9 +436,11 @@ if __name__ == "__main__":
     model_cbam = CBAM_EfficientNet(attention_type="cbam")
     print(f"Total model parameters (CBAM Attention): {sum(p.numel() for p in model_cbam.parameters()):,}")
     
-    dummy_input = torch.randn(4, 3, 224, 224) # Batch size of 4
-    output = model_se(dummy_input)
-    print(f"Input shape:  {dummy_input.shape}")
-    print(f"Output shape: {output.shape}")
-    assert output.shape == (4, 1), f"Unexpected output shape: {output.shape}"
-    print("✓ Model dimension round-trip validation successful!")
+    # Test multiple input shapes to verify progressive resizing / interpolation in MHSA
+    for sz in [128, 192, 224]:
+        dummy_input = torch.randn(4, 3, sz, sz) # Batch size of 4
+        output = model_se(dummy_input)
+        print(f"Input size: {sz}x{sz} | Output shape: {output.shape}")
+        assert output.shape == (4, 1), f"Unexpected output shape: {output.shape}"
+        
+    print("✓ Model v3 dimension round-trip validation successful!")
