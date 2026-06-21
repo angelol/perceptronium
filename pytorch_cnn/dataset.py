@@ -39,7 +39,8 @@ class CatsAndDogsDataset(Dataset):
     _cached_paths = {}
 
     def __init__(self, root_dir, split="train", image_size=224, transform=None,
-                 limit_train_per_class=10000, limit_test_per_class=2501, seed=42):
+                 limit_train_per_class=10000, limit_test_per_class=2501, seed=42,
+                 extra_dir=None):
         self.root_dir = root_dir
         self.split = split.lower()
         self.image_size = image_size
@@ -52,6 +53,15 @@ class CatsAndDogsDataset(Dataset):
         # Create fresh lists from the sorted directory caches to prevent side effects
         cat_paths = list(self._get_valid_sorted_paths(cats_dir))
         dog_paths = list(self._get_valid_sorted_paths(dogs_dir))
+        
+        if extra_dir and os.path.exists(extra_dir):
+            print(f"Loading extra high-quality paths from {extra_dir}...")
+            extra_cats_dir = os.path.join(extra_dir, "cat")
+            extra_dogs_dir = os.path.join(extra_dir, "dog")
+            if os.path.exists(extra_cats_dir):
+                cat_paths.extend(self._get_valid_sorted_paths(extra_cats_dir))
+            if os.path.exists(extra_dogs_dir):
+                dog_paths.extend(self._get_valid_sorted_paths(extra_dogs_dir))
         
         print(f"Applying aligned deterministic shuffle (seed={seed})...")
         deterministic_shuffle(cat_paths, seed)

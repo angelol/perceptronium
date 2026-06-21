@@ -468,6 +468,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Deterministic random seed")
     parser.add_argument("--image-size", type=int, default=224, help="Input resolution")
     parser.add_argument("--data-dir", type=str, default="data/PetImages", help="Path to Cats & Dogs folder")
+    parser.add_argument("--extra-dir", type=str, default="/Users/al/Projects/angelo/cats_dogs_dataset", help="Path to additional high-quality Cats & Dogs folder")
     parser.add_argument("--weights-path", type=str, default="pytorch_cnn/model.pth", help="Path to save weights")
     parser.add_argument("--optimizer", type=str, default="asam", choices=["adamw", "lookahead", "sam", "asam", "lion"], help="Optimizer type")
     parser.add_argument("--scheduler", type=str, default="cosine-restarts", choices=["onecycle", "cosine-restarts", "none"], help="Learning rate scheduler")
@@ -476,8 +477,8 @@ def main():
     parser.add_argument("--swa-start", type=int, default=35, help="Epoch to start SWA")
     parser.add_argument("--save-snapshots", action="store_true", help="Save snapshots of final epochs for ensembling")
     parser.add_argument("--progressive", action="store_true", help="Enable progressive resizing curriculum")
-    parser.add_argument("--limit-train", type=int, default=10000, help="Max training images per class")
-    parser.add_argument("--limit-test", type=int, default=2501, help="Max testing/validation images per class")
+    parser.add_argument("--limit-train", type=int, default=12150, help="Max training images per class")
+    parser.add_argument("--limit-test", type=int, default=1349, help="Max testing/validation images per class")
     args = parser.parse_args()
     
     set_seed(args.seed)
@@ -496,6 +497,7 @@ def main():
         args.data_dir = "../data/PetImages"
         
     print(f"Dataset target folder: {args.data_dir}", flush=True)
+    print(f"Extra dataset folder: {args.extra_dir}", flush=True)
     
     # 2. Setup Data Loading & Splits
     train_transform, test_transform = get_transforms(args.image_size)
@@ -506,7 +508,8 @@ def main():
         image_size=args.image_size,
         transform=train_transform,
         limit_train_per_class=args.limit_train,
-        limit_test_per_class=args.limit_test
+        limit_test_per_class=args.limit_test,
+        extra_dir=args.extra_dir
     )
     
     test_dataset = CatsAndDogsDataset(
@@ -515,7 +518,8 @@ def main():
         image_size=args.image_size,
         transform=test_transform,
         limit_train_per_class=args.limit_train,
-        limit_test_per_class=args.limit_test
+        limit_test_per_class=args.limit_test,
+        extra_dir=args.extra_dir
     )
     
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
