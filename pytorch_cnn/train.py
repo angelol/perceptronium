@@ -283,7 +283,7 @@ def cutmix_data(x, y, alpha=1.0, device='cpu'):
 
 def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, scheduler=None, 
                     mixup_prob=0.3, cutmix_prob=0.3, progressive=False, use_sam=False, use_asam=False,
-                    scaler=None):
+                    scaler=None, amp_dtype=torch.float16):
     """Executes a single epoch of training with optional Mixup and CutMix batch-mixing, progressive resizing, and SAM/ASAM."""
     model.train()
     running_loss = 0.0
@@ -323,10 +323,14 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, sche
             
         raw_criterion = criterion.bce if hasattr(criterion, 'bce') else nn.BCEWithLogitsLoss()
         
+        # Determine autocast activation based on scaler presence or BF16 usage
+        amp_enabled = (scaler is not None) or (amp_dtype == torch.bfloat16 and device.type == "cuda")
+        autocast_device = "cuda" if device.type == "cuda" else "cpu"
+        
         if use_sam or use_asam:
             # First forward-backward pass
             optimizer.zero_grad()
-            with torch.amp.autocast(device_type=device.type if device.type in ["cuda", "cpu"] else "cuda", enabled=(scaler is not None)):
+            with torch.amp.autocast(device_type=autocast_device, enabled=amp_enabled, dtype=amp_dtype):
                 if mixed:
                     logits = model(mixed_inputs)
                     loss = lam * raw_criterion(logits, labels_a) + (1.0 - lam) * raw_criterion(logits, labels_b)
@@ -342,7 +346,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, sche
                 optimizer.first_step(zero_grad=True)
             
             # Second forward-backward pass (on perturbed parameters)
-            with torch.amp.autocast(device_type=device.type if device.type in ["cuda", "cpu"] else "cuda", enabled=(scaler is not None)):
+            with torch.amp.autocast(device_type=autocast_device, enabled=amp_enabled, dtype=amp_dtype):
                 if mixed:
                     logits2 = model(mixed_inputs)
                     loss2 = lam * raw_criterion(logits2, labels_a) + (1.0 - lam) * raw_criterion(logits2, labels_b)
@@ -359,7 +363,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, sche
         else:
             # Standard single forward-backward pass
             optimizer.zero_grad()
-            with torch.amp.autocast(device_type=device.type if device.type in ["cuda", "cpu"] else "cuda", enabled=(scaler is not None)):
+            with torch.amp.autocast(device_type=autocast_device, enabled=amp_enabled, dtype=amp_dtype):
                 if mixed:
                     logits = model(mixed_inputs)
                     loss = lam * raw_criterion(logits, labels_a) + (1.0 - lam) * raw_criterion(logits, labels_b)
@@ -509,7 +513,9 @@ def main():
     parser.add_argument("--limit-train", type=int, default=12150, help="Max training images per class")
     parser.add_argument("--limit-test", type=int, default=1349, help="Max testing/validation images per class")
     parser.add_argument("--amp", action="store_true", help="Enable Automatic Mixed Precision (AMP)")
+    parser.add_argument("--bf16", action="store_true", help="Enable Native Bfloat16 Mixed Precision (recommended for L4)")
     parser.add_argument("--compile", action="store_true", help="Enable torch.compile model compilation")
+    parser.add_argument("--compile-mode", type=str, default="default", choices=["default", "reduce-overhead", "max-autotune"], help="torch.compile mode")
     args = parser.parse_args()
     
     set_seed(args.seed)
@@ -520,6 +526,10 @@ def main():
     elif torch.cuda.is_available():
         device = torch.device("cuda")
         print("🚀 Using hardware-accelerated device: NVIDIA GPU (CUDA)", flush=True)
+        # Enable TF32 globally for matrix multiplications and convolutions on L4/Ampere
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        print("⚙️ TensorFloat-32 (TF32) Enabled for high-performance matmul/conv", flush=True)
     else:
         device = torch.device("cpu")
         print("⚠️ Using CPU device (slow)", flush=True)
@@ -553,20 +563,41 @@ def main():
         extra_dir=args.extra_dir
     )
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    # Optimized DataLoader configurations (persistent_workers + drop_last for static compile traces)
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=True, 
+        num_workers=4, 
+        pin_memory=True,
+        persistent_workers=True,
+        drop_last=True
+    )
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False, 
+        num_workers=4, 
+        pin_memory=True,
+        persistent_workers=True
+    )
     
     # 3. Model, Loss, Optimizer, and LR Scheduler
     model = CustomCNN(attention_type=args.attention_type).to(device)
     
     # Model Compilation (Optional, high-performance on G2 GPU)
     if args.compile:
-        print("⚙️ Compiling model with torch.compile...", flush=True)
-        model = torch.compile(model)
+        print(f"⚙️ Compiling model with torch.compile (mode={args.compile_mode})...", flush=True)
+        model = torch.compile(model, mode=args.compile_mode)
         
-    scaler = torch.cuda.amp.GradScaler(enabled=args.amp) if (args.amp and device.type == "cuda") else None
-    if scaler is not None:
-        print("⚙️ Automatic Mixed Precision (AMP) Enabled with GradScaler", flush=True)
+    amp_dtype = torch.bfloat16 if args.bf16 else torch.float16
+    scaler = None
+    if args.amp and device.type == "cuda":
+        if args.bf16:
+            print("⚙️ Bfloat16 (BF16) Mixed Precision Enabled (No GradScaler needed)", flush=True)
+        else:
+            scaler = torch.cuda.amp.GradScaler(enabled=True)
+            print("⚙️ FP16 Automatic Mixed Precision (AMP) Enabled with GradScaler", flush=True)
         
     # Using Label Smoothing BCE loss to improve final boundary calibration
     criterion = LabelSmoothingBCEWithLogitsLoss(smoothing=0.05)
@@ -672,7 +703,7 @@ def main():
             model, train_loader, criterion, optimizer, device, epoch,
             scheduler=scheduler, mixup_prob=mix_prob, cutmix_prob=mix_prob,
             progressive=args.progressive, use_sam=use_sam, use_asam=use_asam,
-            scaler=scaler
+            scaler=scaler, amp_dtype=amp_dtype
         )
         
         # Evaluate with 6-View Multi-Scale TTA

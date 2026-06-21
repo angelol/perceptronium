@@ -295,14 +295,14 @@ class MHSA2D(nn.Module):
         k = k.view(B, self.num_heads, self.head_dim, N).transpose(-1, -2) # (B, num_heads, N, head_dim)
         v = v.view(B, self.num_heads, self.head_dim, N).transpose(-1, -2) # (B, num_heads, N, head_dim)
         
-        # Scaled dot-product attention
-        # Query: (B, h, N, d), Key: (B, h, N, d) -> Attn matrix: (B, h, N, N)
-        attn = (q @ k.transpose(-1, -2)) * (self.head_dim ** -0.5)
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_dropout(attn)
-        
-        # Attn: (B, h, N, N), Value: (B, h, N, d) -> Output: (B, h, N, d)
-        out = attn @ v
+        # Scaled dot-product attention (SDPA)
+        # Highly optimized, natively compiles, leverages FlashAttention-2 or Mem-Efficient Attention
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=None,
+            dropout_p=self.attn_dropout.p if self.training else 0.0,
+            is_causal=False
+        )
         
         # Transpose back to (B, num_heads, head_dim, N) and reshape to (B, C, H, W)
         out = out.transpose(-1, -2).contiguous().view(B, C, H, W)

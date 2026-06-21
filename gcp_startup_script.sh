@@ -5,7 +5,8 @@ set -euxo pipefail
 # Runs inside the Deep Learning VM instance on GCE.
 
 # 1. Initialize Paths
-WORKDIR="/opt/perceptronium"
+# Using RAM-backed Shared Memory (/dev/shm) to completely eliminate persistent disk read latency bottleneck!
+WORKDIR="/dev/shm/perceptronium"
 mkdir -p "$WORKDIR"
 mkdir -p "$WORKDIR/data"
 
@@ -83,16 +84,20 @@ if [ -f "requirements.txt" ]; then
 fi
 
 
-# 6. Execute Training Run 10 with high performance parameters
-# Running with Lookahead AdamW, SWA, progressive resizing, and maximum GPU speed-ups (AMP + compile)
-echo "🏋️ Launching high-performance training Run 10 on NVIDIA L4 GPU..."
+# 6. Execute Training Run 11 with hardware-optimized throughput parameters
+# Running with Lookahead AdamW, SWA, native BF16, global TF32, 128 batch size, 
+# and CUDA Graphs model compilation (reduce-overhead mode)
+echo "🏋️ Launching hardware-optimized training Run 11 on NVIDIA L4 GPU..."
 TRAINING_FAILED=0
 $PYTHON_BIN -u train.py \
-    --epochs 60 \
+    --epochs 100 \
+    --batch-size 128 \
     --optimizer lookahead \
     --swa \
     --amp \
+    --bf16 \
     --compile \
+    --compile-mode reduce-overhead \
     --data-dir "$WORKDIR/data/PetImages" \
     --extra-dir "$WORKDIR/cats_dogs_dataset" \
     --weights-path "$WORKDIR/pytorch_cnn/model.pth" \
@@ -107,19 +112,19 @@ fi
 # 7. Upload checkpoints and logs to GCS
 echo "📤 Uploading weights, checkpoints, and logs to GCS..."
 if [ -f "$WORKDIR/pytorch_cnn/model.pth" ]; then
-    gcloud storage cp "$WORKDIR/pytorch_cnn/model.pth" "gs://$BUCKET_NAME/$GCS_PREFIX/results/model_run10.pth" || true
+    gcloud storage cp "$WORKDIR/pytorch_cnn/model.pth" "gs://$BUCKET_NAME/$GCS_PREFIX/results/model_run11.pth" || true
 fi
 if [ -f "$WORKDIR/pytorch_cnn/model_swa.pth" ]; then
-    gcloud storage cp "$WORKDIR/pytorch_cnn/model_swa.pth" "gs://$BUCKET_NAME/$GCS_PREFIX/results/model_swa_run10.pth" || true
+    gcloud storage cp "$WORKDIR/pytorch_cnn/model_swa.pth" "gs://$BUCKET_NAME/$GCS_PREFIX/results/model_swa_run11.pth" || true
 fi
 if [ -f "$WORKDIR/pytorch_cnn/learning_curves.png" ]; then
-    gcloud storage cp "$WORKDIR/pytorch_cnn/learning_curves.png" "gs://$BUCKET_NAME/$GCS_PREFIX/results/learning_curves_run10.png" || true
+    gcloud storage cp "$WORKDIR/pytorch_cnn/learning_curves.png" "gs://$BUCKET_NAME/$GCS_PREFIX/results/learning_curves_run11.png" || true
 fi
 if [ -f "$WORKDIR/pytorch_cnn/training.log" ]; then
-    gcloud storage cp "$WORKDIR/pytorch_cnn/training.log" "gs://$BUCKET_NAME/$GCS_PREFIX/results/training_run10.log" || true
+    gcloud storage cp "$WORKDIR/pytorch_cnn/training.log" "gs://$BUCKET_NAME/$GCS_PREFIX/results/training_run11.log" || true
 fi
 if [ -f "/var/log/perceptronium_startup.log" ]; then
-    gcloud storage cp "/var/log/perceptronium_startup.log" "gs://$BUCKET_NAME/$GCS_PREFIX/results/startup_run10.log" || true
+    gcloud storage cp "/var/log/perceptronium_startup.log" "gs://$BUCKET_NAME/$GCS_PREFIX/results/startup_run11.log" || true
 fi
 
 echo "=== PERCEPTRONIUM CLOUD TRAINING FINISHED ==="
