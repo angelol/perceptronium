@@ -14,7 +14,7 @@ class CatsAndDogsDataset(Dataset):
     _cached_paths = {}
 
     def __init__(self, root_dir, split="train", image_size=224, transform=None,
-                 limit_train_per_class=4000, limit_test_per_class=1000):
+                 limit_train_per_class=10000, limit_test_per_class=2501, ignore_cleaned_metadata=False):
         self.root_dir = root_dir
         self.split = split.lower()
         self.image_size = image_size
@@ -34,7 +34,7 @@ class CatsAndDogsDataset(Dataset):
         if self.split == "train":
             # Check if cleaned metadata exists
             metadata_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cleaned_dataset_metadata.json")
-            if os.path.exists(metadata_path):
+            if os.path.exists(metadata_path) and not ignore_cleaned_metadata:
                 import json
                 print(f"✓ Found cleaned dataset metadata at: {metadata_path}")
                 with open(metadata_path, "r") as f:

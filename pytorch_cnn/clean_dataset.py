@@ -42,11 +42,12 @@ def main():
         split="train",
         image_size=224,
         transform=None,
-        limit_train_per_class=4000
+        limit_train_per_class=10000,
+        ignore_cleaned_metadata=True
     )
     
     # 2. Instantiate and load model
-    model = CustomCNN(attention_type="se") # SWA weights were trained with se attention
+    model = CustomCNN(attention_type="cbam") # SWA weights were trained with cbam attention
     model.load_state_dict(torch.load(weights_path, map_location=device))
     model = model.to(device)
     model.eval()
