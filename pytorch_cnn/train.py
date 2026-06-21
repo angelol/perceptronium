@@ -476,6 +476,8 @@ def main():
     parser.add_argument("--swa-start", type=int, default=35, help="Epoch to start SWA")
     parser.add_argument("--save-snapshots", action="store_true", help="Save snapshots of final epochs for ensembling")
     parser.add_argument("--progressive", action="store_true", help="Enable progressive resizing curriculum")
+    parser.add_argument("--limit-train", type=int, default=10000, help="Max training images per class")
+    parser.add_argument("--limit-test", type=int, default=2501, help="Max testing/validation images per class")
     args = parser.parse_args()
     
     set_seed(args.seed)
@@ -503,8 +505,8 @@ def main():
         split="train",
         image_size=args.image_size,
         transform=train_transform,
-        limit_train_per_class=4000,
-        limit_test_per_class=1000
+        limit_train_per_class=args.limit_train,
+        limit_test_per_class=args.limit_test
     )
     
     test_dataset = CatsAndDogsDataset(
@@ -512,8 +514,8 @@ def main():
         split="test",
         image_size=args.image_size,
         transform=test_transform,
-        limit_train_per_class=4000,
-        limit_test_per_class=1000
+        limit_train_per_class=args.limit_train,
+        limit_test_per_class=args.limit_test
     )
     
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
