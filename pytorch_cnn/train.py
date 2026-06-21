@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
+from tqdm import tqdm
 
 # Set matplotlib backend to non-GUI to avoid errors on headless runs
 import matplotlib
@@ -299,7 +300,8 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, sche
     else:
         current_size = 224
 
-    for inputs, labels in dataloader:
+    progress_bar = tqdm(dataloader, desc=f"Epoch {epoch:02d}", leave=True)
+    for inputs, labels in progress_bar:
         inputs = inputs.to(device)
         labels = labels.to(device).unsqueeze(1) # Reshape to (batch_size, 1)
         
@@ -371,6 +373,12 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, sche
                 correct += (preds == labels).sum().item()
             total += labels.size(0)
             
+        # Real-time metrics in tqdm progress bar
+        progress_bar.set_postfix({
+            "loss": f"{running_loss / total:.4f}",
+            "acc": f"{(correct / total) * 100.0:.2f}%"
+        })
+            
     epoch_loss = running_loss / total
     epoch_acc = (correct / total) * 100.0
     return epoch_loss, epoch_acc
@@ -384,7 +392,8 @@ def evaluate(model, dataloader, criterion, device, use_tta=True):
     correct = 0
     total = 0
     
-    for inputs, labels in dataloader:
+    progress_bar = tqdm(dataloader, desc="Evaluating", leave=False)
+    for inputs, labels in progress_bar:
         inputs = inputs.to(device)
         labels = labels.to(device).unsqueeze(1)
         
@@ -417,7 +426,8 @@ def evaluate_advanced_tta(model, dataloader, criterion, device):
     correct = 0
     total = 0
     
-    for inputs, labels in dataloader:
+    progress_bar = tqdm(dataloader, desc="Validating (6-View TTA)", leave=False)
+    for inputs, labels in progress_bar:
         inputs = inputs.to(device)
         labels = labels.to(device).unsqueeze(1)
         
@@ -522,8 +532,8 @@ def main():
         extra_dir=args.extra_dir
     )
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
     
     # 3. Model, Loss, Optimizer, and LR Scheduler
     model = CustomCNN(attention_type=args.attention_type).to(device)
