@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
+import torchvision.transforms.functional as F_trans
 from tqdm import tqdm
 
 # Set matplotlib backend to non-GUI to avoid errors on headless runs
@@ -18,6 +19,136 @@ import matplotlib.pyplot as plt
 
 from dataset import CatsAndDogsDataset
 from model import CustomCNN
+
+
+class CustomRandAugment:
+    """
+    Customized RandAugment that excludes extreme color inversions (Solarize, Invert)
+    which destroy biological fur color representation of dogs and cats.
+    """
+    def __init__(self, num_ops=2, magnitude=9):
+        self.num_ops = num_ops
+        self.magnitude = magnitude  # out of 10
+        self.op_list = [
+            self.shear_x,
+            self.shear_y,
+            self.translate_x,
+            self.translate_y,
+            self.rotate,
+            self.brightness,
+            self.color,
+            self.contrast,
+            self.sharpness,
+            self.posterize,
+            self.equalize,
+            self.autocontrast
+        ]
+
+    def shear_x(self, img, val):
+        deg = val * 30.0
+        return F_trans.affine(img, angle=0, translate=[0, 0], scale=1.0, shear=[deg, 0.0])
+
+    def shear_y(self, img, val):
+        deg = val * 30.0
+        return F_trans.affine(img, angle=0, translate=[0, 0], scale=1.0, shear=[0.0, deg])
+
+    def translate_x(self, img, val):
+        w, _ = img.size
+        shift = int(val * w * 0.3)
+        return F_trans.affine(img, angle=0, translate=[shift, 0], scale=1.0, shear=[0.0, 0.0])
+
+    def translate_y(self, img, val):
+        _, h = img.size
+        shift = int(val * h * 0.3)
+        return F_trans.affine(img, angle=0, translate=[0, shift], scale=1.0, shear=[0.0, 0.0])
+
+    def rotate(self, img, val):
+        deg = val * 30.0
+        return F_trans.rotate(img, deg)
+
+    def brightness(self, img, val):
+        factor = 1.0 + (val * 0.9) if random.random() < 0.5 else 1.0 - (val * 0.9)
+        return F_trans.adjust_brightness(img, max(0.1, factor))
+
+    def color(self, img, val):
+        factor = 1.0 + (val * 0.9) if random.random() < 0.5 else 1.0 - (val * 0.9)
+        return F_trans.adjust_saturation(img, max(0.1, factor))
+
+    def contrast(self, img, val):
+        factor = 1.0 + (val * 0.9) if random.random() < 0.5 else 1.0 - (val * 0.9)
+        return F_trans.adjust_contrast(img, max(0.1, factor))
+
+    def sharpness(self, img, val):
+        factor = 1.0 + (val * 0.9) if random.random() < 0.5 else 1.0 - (val * 0.9)
+        return F_trans.adjust_sharpness(img, max(0.1, factor))
+
+    def posterize(self, img, val):
+        bits = int(8 - (val * 4))
+        return F_trans.posterize(img, max(1, bits))
+
+    def equalize(self, img, val):
+        return F_trans.equalize(img)
+
+    def autocontrast(self, img, val):
+        return F_trans.autocontrast(img)
+
+    def __call__(self, img):
+        ops = random.sample(self.op_list, self.num_ops)
+        for op in ops:
+            val = (self.magnitude / 10.0) * (1.0 if random.random() < 0.5 else -1.0)
+            if op.__name__ in ["posterize", "equalize", "autocontrast"]:
+                val = abs(val)
+            img = op(img, val)
+        return img
+
+
+class ExponentialMovingAverage:
+    """
+    Maintains Exponential Moving Average (EMA) shadow weights for deep learning models.
+    Smooths optimization trajectories and settles in flat generalization basins.
+    """
+    def __init__(self, model, decay=0.999):
+        self.model = model
+        self.decay = decay
+        self.shadow = {}
+        self.backup = {}
+        
+        # Register shadow weights
+        for name, p in self.model.named_parameters():
+            if p.requires_grad:
+                self.shadow[name] = p.data.clone()
+
+    def update(self):
+        # Run inside torch.no_grad()
+        for name, p in self.model.named_parameters():
+            if p.requires_grad:
+                assert name in self.shadow
+                new_average = (1.0 - self.decay) * p.data + self.decay * self.shadow[name]
+                self.shadow[name].copy_(new_average)
+
+    def apply_shadow(self):
+        for name, p in self.model.named_parameters():
+            if p.requires_grad:
+                self.backup[name] = p.data.clone()
+                p.data.copy_(self.shadow[name])
+
+    def restore(self):
+        for name, p in self.model.named_parameters():
+            if p.requires_grad:
+                p.data.copy_(self.backup[name])
+        self.backup.clear()
+        
+    def state_dict(self):
+        return {
+            "decay": self.decay,
+            "shadow": self.shadow
+        }
+        
+    def load_state_dict(self, state_dict):
+        self.decay = state_dict["decay"]
+        for name, val in state_dict["shadow"].items():
+            if name in self.shadow:
+                self.shadow[name].copy_(val.to(self.shadow[name].device))
 
 def set_seed(seed):
     """Enforces determinism across python, numpy, and PyTorch CPU/GPU backends."""
@@ -199,9 +330,9 @@ class Lion(optim.Optimizer):
 def get_transforms(image_size):
     """Defines high-generalization training (highly augmented) and test image transformations."""
     train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(image_size, scale=(0.2, 1.0), ratio=(3./4., 4./3.)),
+        transforms.RandomResizedCrop(image_size, scale=(0.4, 1.0), ratio=(3./4., 4./3.)),
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.TrivialAugmentWide(),
+        CustomRandAugment(num_ops=2, magnitude=9),
         transforms.ToTensor(),
         transforms.RandomErasing(p=0.2, scale=(0.02, 0.2), value='random'),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -283,21 +414,32 @@ def cutmix_data(x, y, alpha=1.0, device='cpu'):
 
 def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, scheduler=None, 
                     mixup_prob=0.3, cutmix_prob=0.3, progressive=False, use_sam=False, use_asam=False,
-                    scaler=None, amp_dtype=torch.float16):
+                    scaler=None, amp_dtype=torch.float16, ema=None, total_epochs=200):
     """Executes a single epoch of training with optional Mixup and CutMix batch-mixing, progressive resizing, and SAM/ASAM."""
     model.train()
     running_loss = 0.0
     correct = 0
     total = 0
     
-    # Progressive resizing target dimension
+    # Progressive resizing target dimension matching 200-epoch curriculum
     if progressive:
-        if epoch <= 15:
-            current_size = 128
-        elif epoch <= 30:
-            current_size = 192
+        if total_epochs == 200:
+            if epoch <= 60:
+                current_size = 160
+            elif epoch <= 130:
+                current_size = 224
+            else:
+                current_size = 288
         else:
-            current_size = 224
+            # Proportional scaling for non-standard runs (e.g. smoke tests)
+            stage_1_end = int(0.3 * total_epochs)
+            stage_2_end = int(0.65 * total_epochs)
+            if epoch <= stage_1_end:
+                current_size = 160
+            elif epoch <= stage_2_end:
+                current_size = 224
+            else:
+                current_size = 288
     else:
         current_size = 224
 
@@ -340,9 +482,11 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, sche
             if scaler is not None:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.first_step(zero_grad=True)
             else:
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.first_step(zero_grad=True)
             
             # Second forward-backward pass (on perturbed parameters)
@@ -356,10 +500,15 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, sche
             if scaler is not None:
                 scaler.scale(loss2).backward()
                 scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.second_step(zero_grad=True)
             else:
                 loss2.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.second_step(zero_grad=True)
+                
+            if ema is not None:
+                ema.update()
         else:
             # Standard single forward-backward pass
             optimizer.zero_grad()
@@ -372,11 +521,17 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, sche
                     loss = criterion(logits, labels)
             if scaler is not None:
                 scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                
+            if ema is not None:
+                ema.update()
             
         # Step OneCycleLR per batch
         if scheduler is not None and isinstance(scheduler, optim.lr_scheduler.OneCycleLR):
@@ -443,13 +598,16 @@ def evaluate(model, dataloader, criterion, device, use_tta=True):
 
 @torch.no_grad()
 def evaluate_advanced_tta(model, dataloader, criterion, device):
-    """Evaluates the model on validation/testing set with 6-View Multi-Scale TTA."""
+    """
+    Evaluates the model on validation/testing set with 12-View Center-Crop & Flip TTA.
+    Uses 6 scales: [160, 192, 224, 256, 288, 320], averaging original and horizontal flip outputs.
+    """
     model.eval()
     running_loss = 0.0
     correct = 0
     total = 0
     
-    progress_bar = tqdm(dataloader, desc="Validating (6-View TTA)", leave=False)
+    progress_bar = tqdm(dataloader, desc="Validating (12-View TTA)", leave=False)
     for inputs, labels in progress_bar:
         inputs = inputs.to(device)
         labels = labels.to(device).unsqueeze(1)
@@ -459,8 +617,8 @@ def evaluate_advanced_tta(model, dataloader, criterion, device):
         loss = criterion(logits, labels)
         running_loss += loss.item() * inputs.size(0)
         
-        # 6-View Multi-Scale TTA
-        scales = [192, 224, 256]
+        # 12-View Multi-Scale TTA
+        scales = [160, 192, 224, 256, 288, 320]
         all_probs = []
         
         for scale in scales:
@@ -504,7 +662,7 @@ def main():
     parser.add_argument("--extra-dir", type=str, default="/Users/al/Projects/angelo/cats_dogs_dataset", help="Path to additional high-quality Cats & Dogs folder")
     parser.add_argument("--weights-path", type=str, default="pytorch_cnn/model.pth", help="Path to save weights")
     parser.add_argument("--optimizer", type=str, default="asam", choices=["adamw", "lookahead", "sam", "asam", "lion"], help="Optimizer type")
-    parser.add_argument("--scheduler", type=str, default="cosine-restarts", choices=["onecycle", "cosine-restarts", "none"], help="Learning rate scheduler")
+    parser.add_argument("--scheduler", type=str, default="cosine-restarts", choices=["onecycle", "cosine-restarts", "sequential", "none"], help="Learning rate scheduler")
     parser.add_argument("--attention-type", type=str, default="se", choices=["se", "cbam"], help="Attention type in blocks")
     parser.add_argument("--swa", action="store_true", help="Enable Stochastic Weight Averaging (SWA)")
     parser.add_argument("--swa-start", type=int, default=35, help="Epoch to start SWA")
@@ -644,6 +802,33 @@ def main():
             T_mult=2,
             eta_min=1e-6
         )
+    elif args.scheduler == "sequential":
+        print("⚙️ Initializing SequentialLR (10-epoch Linear Warmup + Cosine Annealing)...", flush=True)
+        if args.epochs == 200:
+            warmup_epochs = 10
+            cosine_epochs = 190
+        else:
+            warmup_epochs = max(1, int(0.05 * args.epochs))
+            cosine_epochs = args.epochs - warmup_epochs
+            
+        opt = base_optimizer if args.optimizer in ["lookahead", "sam", "asam"] else optimizer
+        
+        scheduler1 = optim.lr_scheduler.LinearLR(
+            opt,
+            start_factor=1e-3,
+            end_factor=1.0,
+            total_iters=warmup_epochs
+        )
+        scheduler2 = optim.lr_scheduler.CosineAnnealingLR(
+            opt,
+            T_max=cosine_epochs,
+            eta_min=1e-6
+        )
+        scheduler = optim.lr_scheduler.SequentialLR(
+            opt,
+            schedulers=[scheduler1, scheduler2],
+            milestones=[warmup_epochs]
+        )
     else:
         scheduler = None
     
@@ -688,29 +873,101 @@ def main():
     print("| Epoch    | Train Loss | Train Acc | Test Loss  | Test Acc   | Learning Rate | Epoch Time (sec) |")
     print("+" + "-"*96 + "+")
     
+    # Initialize EMA shadow weights
+    ema = ExponentialMovingAverage(model, decay=0.999)
+    
+    current_size = args.image_size
+    current_bs = args.batch_size
+    
     for epoch in range(1, args.epochs + 1):
         start_time = time.time()
         
+        # Reconstruct dataloaders for Progressive Resizing
+        if args.progressive:
+            rebuild_loader = False
+            if epoch == 1:
+                current_size, current_bs = 160, 128
+                rebuild_loader = True
+            elif epoch == 61:
+                current_size, current_bs = 224, 128
+                rebuild_loader = True
+            elif epoch == 131:
+                current_size, current_bs = 288, 64
+                rebuild_loader = True
+                
+            if rebuild_loader:
+                current_bs = min(current_bs, args.batch_size)
+                print(f"\n🔄 [Progressive Resizing] Rebuilding dataloaders for spatial size {current_size}x{current_size} with Batch Size {current_bs}", flush=True)
+                train_transform, test_transform = get_transforms(current_size)
+                
+                train_dataset = CatsAndDogsDataset(
+                    root_dir=args.data_dir,
+                    split="train",
+                    image_size=current_size,
+                    transform=train_transform,
+                    limit_train_per_class=args.limit_train,
+                    limit_test_per_class=args.limit_test,
+                    extra_dir=args.extra_dir
+                )
+                test_dataset = CatsAndDogsDataset(
+                    root_dir=args.data_dir,
+                    split="test",
+                    image_size=current_size,
+                    transform=test_transform,
+                    limit_train_per_class=args.limit_train,
+                    limit_test_per_class=args.limit_test,
+                    extra_dir=args.extra_dir
+                )
+                
+                train_loader = DataLoader(
+                    train_dataset, 
+                    batch_size=current_bs, 
+                    shuffle=True, 
+                    num_workers=4, 
+                    pin_memory=True,
+                    persistent_workers=True,
+                    drop_last=True
+                )
+                test_loader = DataLoader(
+                    test_dataset, 
+                    batch_size=current_bs, 
+                    shuffle=False, 
+                    num_workers=4, 
+                    pin_memory=True,
+                    persistent_workers=True
+                )
+        
         current_lr = base_optimizer.param_groups[0]['lr'] if args.optimizer in ["lookahead", "sam", "asam"] else optimizer.param_groups[0]['lr']
         
-        # Cooldown schedule: Disable Mixup/CutMix in the first 2 epochs and last 5 epochs
-        if epoch <= 2 or epoch > (args.epochs - 5):
-            mix_prob = 0.0
+        # Scheduled Mixup/CutMix Regularization:
+        if args.epochs == 200:
+            if epoch <= 10 or epoch > 180:
+                mix_prob = 0.0
+            else:
+                mix_prob = 0.3
         else:
-            mix_prob = 0.3
+            warmup_end = max(1, int(0.05 * args.epochs))
+            cooldown_start = int(0.9 * args.epochs)
+            if epoch <= warmup_end or epoch > cooldown_start:
+                mix_prob = 0.0
+            else:
+                mix_prob = 0.3
             
         train_loss, train_acc = train_one_epoch(
             model, train_loader, criterion, optimizer, device, epoch,
             scheduler=scheduler, mixup_prob=mix_prob, cutmix_prob=mix_prob,
             progressive=args.progressive, use_sam=use_sam, use_asam=use_asam,
-            scaler=scaler, amp_dtype=amp_dtype
+            scaler=scaler, amp_dtype=amp_dtype, ema=ema, total_epochs=args.epochs
         )
         
-        # Evaluate with 6-View Multi-Scale TTA
+        # Apply EMA shadow weights for validation/testing evaluation
+        ema.apply_shadow()
         test_loss, test_acc = evaluate_advanced_tta(model, test_loader, criterion, device)
+        # Restore original parameter weights for training
+        ema.restore()
         
         # Step epoch-level schedulers (except during SWA constant phase)
-        if scheduler is not None and args.scheduler == "cosine-restarts":
+        if scheduler is not None and args.scheduler in ["cosine-restarts", "sequential"]:
             if not args.swa or epoch < args.swa_start:
                 scheduler.step()
             
@@ -725,7 +982,11 @@ def main():
         
         if test_acc > best_test_acc:
             best_test_acc = test_acc
+            # Save the best EMA shadow weights to args.weights_path
+            ema.apply_shadow()
             torch.save(model.state_dict(), args.weights_path)
+            ema.restore()
+            print(f"🌟 Saved new best EMA weights with accuracy: {best_test_acc:.2f}%", flush=True)
             
         # Update SWA parameters if SWA is enabled and we are in SWA phase
         if args.swa and epoch >= args.swa_start:
@@ -734,11 +995,25 @@ def main():
             if swa_scheduler is not None:
                 swa_scheduler.step()
             
-        # Save snapshots of final epochs
-        if args.save_snapshots and epoch > (args.epochs - 3):
-            snapshot_path = args.weights_path.replace(".pth", f"_epoch{epoch}.pth")
-            torch.save(model.state_dict(), snapshot_path)
-            print(f"📸 Saved snapshot checkpoint: {snapshot_path}", flush=True)
+        # Save snapshots of specific epochs for Snapshot Ensembling
+        if args.save_snapshots:
+            should_save = False
+            if args.epochs == 200:
+                if epoch in [15, 45, 105, 150]:
+                    should_save = True
+            else:
+                milestones = [int(p * args.epochs) for p in [0.075, 0.225, 0.525, 0.75]]
+                milestones = sorted(list(set(m for m in milestones if 1 <= m <= args.epochs)))
+                if epoch in milestones:
+                    should_save = True
+                    
+            if should_save:
+                snapshot_path = args.weights_path.replace(".pth", f"_epoch{epoch}.pth")
+                # Save EMA shadow weights as the snapshot
+                ema.apply_shadow()
+                torch.save(model.state_dict(), snapshot_path)
+                ema.restore()
+                print(f"📸 Saved snapshot checkpoint (EMA weights): {snapshot_path}", flush=True)
             
     print("+" + "-"*96 + "+")
     print(f"✓ Training complete! Best Validation Accuracy achieved (with 6-View TTA): {best_test_acc:.2f}%")

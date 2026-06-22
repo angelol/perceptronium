@@ -2,10 +2,12 @@ import os
 import sys
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 import torchvision.transforms as transforms
 import numpy as np
+from tqdm import tqdm
 
 # Set matplotlib backend to non-GUI
 import matplotlib
@@ -114,14 +116,62 @@ def plot_reliability_diagram(confs_before, accs_before, ece_before, confs_after,
     print(f"📊 Calibration reliability plot saved to: {save_path}")
 
 
+def extract_tta_logits_and_labels(model, dataloader, device):
+    """
+    Extracts predictions using 12-View Center-Crop & Flip TTA and converts averaged probabilities 
+    back to logit space to match temperature scaling assumptions.
+    """
+    model.eval()
+    all_tta_logits = []
+    all_labels = []
+    
+    # 12-View TTA scales
+    scales = [160, 192, 224, 256, 288, 320]
+    
+    with torch.no_grad():
+        for inputs, labels in tqdm(dataloader, desc="Extracting 12-View TTA Preds", leave=False):
+            inputs = inputs.to(device)
+            
+            all_probs = []
+            for scale in scales:
+                if inputs.shape[-1] != scale:
+                    inputs_scaled = F.interpolate(inputs, size=(scale, scale), mode="bilinear", align_corners=False)
+                else:
+                    inputs_scaled = inputs
+                    
+                logits_orig = model(inputs_scaled)
+                probs_orig = torch.sigmoid(logits_orig)
+                all_probs.append(probs_orig)
+                
+                inputs_flipped = torch.flip(inputs_scaled, dims=[3])
+                logits_flipped = model(inputs_flipped)
+                probs_flipped = torch.sigmoid(logits_flipped)
+                all_probs.append(probs_flipped)
+                
+            # Average probabilities over 12 views
+            avg_probs = torch.stack(all_probs).mean(dim=0)
+            
+            # Map back to logit space using inverse sigmoid (logit) function
+            avg_probs_clamped = torch.clamp(avg_probs, min=1e-6, max=1.0 - 1e-6)
+            tta_logits = torch.log(avg_probs_clamped / (1.0 - avg_probs_clamped))
+            
+            all_tta_logits.append(tta_logits.cpu())
+            all_labels.append(labels)
+            
+    all_tta_logits = torch.cat(all_tta_logits, dim=0).squeeze()
+    all_labels = torch.cat(all_labels, dim=0)
+    return all_tta_logits, all_labels
+
+
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Temperature Scaling Calibration for CBAM-EfficientNet")
+    parser = argparse.ArgumentParser(description="TTA-Averaged Temperature Scaling Calibration with Isolated splits")
     parser.add_argument("--weights-path", type=str, default="pytorch_cnn/model.pth", help="Path to trained weights")
     parser.add_argument("--data-dir", type=str, default="data/PetImages", help="Path to Cats & Dogs folder")
     parser.add_argument("--image-size", type=int, default=224, help="Input resolution")
     parser.add_argument("--batch-size", type=int, default=64, help="Loader batch size")
     parser.add_argument("--attention-type", type=str, default="se", choices=["se", "cbam"], help="Attention type in blocks")
+    parser.add_argument("--limit-test", type=int, default=1000, help="Limit test samples per class")
     args = parser.parse_args()
     
     # 1. Device Selection
@@ -139,77 +189,76 @@ def main():
         sys.exit(1)
         
     # 2. Setup Validation / Test Data
-    _, test_transform = transforms.Compose([
-        transforms.Resize((args.image_size, args.image_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ]), transforms.Compose([
+    test_transform = transforms.Compose([
         transforms.Resize((args.image_size, args.image_size)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     
+    # Load validation images
+    limit = args.limit_test
     test_dataset = CatsAndDogsDataset(
         root_dir=args.data_dir,
         split="test",
         image_size=args.image_size,
         transform=test_transform,
-        limit_train_per_class=4000,
-        limit_test_per_class=1000
+        limit_train_per_class=8000,
+        limit_test_per_class=limit
     )
     
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
+    # Create isolated splits (50% optimization, 50% evaluation per class) to guarantee zero calibration leakage
+    half_limit = limit // 2
+    opt_indices = list(range(0, half_limit)) + list(range(limit, limit + half_limit))
+    eval_indices = list(range(half_limit, limit)) + list(range(limit + half_limit, 2 * limit))
+    
+    opt_dataset = Subset(test_dataset, opt_indices)
+    eval_dataset = Subset(test_dataset, eval_indices)
+    
+    opt_loader = DataLoader(opt_dataset, batch_size=args.batch_size, shuffle=False)
+    eval_loader = DataLoader(eval_dataset, batch_size=args.batch_size, shuffle=False)
     
     # 3. Load Model
     model = CustomCNN(attention_type=args.attention_type).to(device)
     model.load_state_dict(torch.load(args.weights_path, map_location=device))
     model.eval()
     
-    print("🔬 Extracting logits from test/validation set...")
-    all_logits = []
-    all_labels = []
+    print("🔬 Extracting TTA-averaged logits from the isolated OPTIMIZATION split...")
+    opt_logits, opt_labels = extract_tta_logits_and_labels(model, opt_loader, device)
     
-    with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs = inputs.to(device)
-            logits = model(inputs)
-            all_logits.append(logits.cpu())
-            all_labels.append(labels)
-            
-    all_logits = torch.cat(all_logits, dim=0).squeeze() # shape: [N]
-    all_labels = torch.cat(all_labels, dim=0) # shape: [N]
+    print("🔬 Extracting TTA-averaged logits from the isolated EVALUATION split...")
+    eval_logits, eval_labels = extract_tta_logits_and_labels(model, eval_loader, device)
     
     # 4. Compute ECE and stats before calibration
-    probs_before = torch.sigmoid(all_logits)
-    ece_before, confs_before, accs_before, _ = compute_binary_ece(probs_before, all_labels)
-    print(f"📊 Initial Expected Calibration Error (ECE): {ece_before * 100.0:.4f}%")
+    probs_before = torch.sigmoid(eval_logits)
+    ece_before, confs_before, accs_before, _ = compute_binary_ece(probs_before, eval_labels)
+    print(f"📊 Evaluation Split - Initial Expected Calibration Error (ECE): {ece_before * 100.0:.4f}%")
     
     # 5. Optimize Temperature
     scaler = TemperatureScaler()
     optimizer = optim.LBFGS(scaler.parameters(), lr=0.01, max_iter=100)
     criterion = nn.BCEWithLogitsLoss()
     
-    # We want to optimize T on the logits
+    # We want to optimize T on the logits of the optimization split
     def eval_closure():
         optimizer.zero_grad()
-        scaled_logits = scaler(all_logits)
-        loss = criterion(scaled_logits, all_labels.float())
+        scaled_logits = scaler(opt_logits)
+        loss = criterion(scaled_logits, opt_labels.float())
         loss.backward()
         return loss
         
-    print("⚙️ Optimizing scaling temperature T via L-BFGS...")
+    print("⚙️ Optimizing scaling temperature T via L-BFGS on optimization split...")
     optimizer.step(eval_closure)
     
     T_optimal = scaler.temperature.item()
     print(f"🌟 Optimal Temperature parameter T: {T_optimal:.6f}")
     
-    # 6. Compute ECE after calibration
+    # 6. Compute ECE after calibration on the independent evaluation split
     with torch.no_grad():
-        calibrated_logits = scaler(all_logits)
-        probs_after = torch.sigmoid(calibrated_logits)
+        calibrated_eval_logits = scaler(eval_logits)
+        probs_after = torch.sigmoid(calibrated_eval_logits)
         
-    ece_after, confs_after, accs_after, _ = compute_binary_ece(probs_after, all_labels)
-    print(f"🌟 Calibrated Expected Calibration Error (ECE): {ece_after * 100.0:.4f}%")
+    ece_after, confs_after, accs_after, _ = compute_binary_ece(probs_after, eval_labels)
+    print(f"🌟 Evaluation Split - Calibrated Expected Calibration Error (ECE): {ece_after * 100.0:.4f}%")
     
     # 7. Plot and Save Reliability Curves
     save_dir = os.path.dirname(args.weights_path)

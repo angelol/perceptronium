@@ -5,8 +5,8 @@ set -euxo pipefail
 # Runs inside the Deep Learning VM instance on GCE.
 
 # 1. Initialize Paths
-# Using RAM-backed Shared Memory (/dev/shm) to completely eliminate persistent disk read latency bottleneck!
-WORKDIR="/dev/shm/perceptronium"
+# Using high-performance PD-SSD boot disk (/opt/perceptronium) with 100GB space to prevent tmpfs space limits.
+WORKDIR="/opt/perceptronium"
 mkdir -p "$WORKDIR"
 mkdir -p "$WORKDIR/data"
 
@@ -85,15 +85,17 @@ fi
 
 
 # 6. Execute Training Run 11 with hardware-optimized throughput parameters
-# Running with Lookahead AdamW, SWA, native BF16, global TF32, 128 batch size, 
+# Running with Lookahead AdamW, progressive resizing, sequential lr, native BF16, global TF32, 128 batch size, 
 # and CUDA Graphs model compilation (reduce-overhead mode)
 echo "🏋️ Launching hardware-optimized training Run 11 on NVIDIA L4 GPU..."
 TRAINING_FAILED=0
 $PYTHON_BIN -u train.py \
-    --epochs 100 \
+    --epochs 200 \
     --batch-size 128 \
     --optimizer lookahead \
-    --swa \
+    --scheduler sequential \
+    --progressive \
+    --save-snapshots \
     --amp \
     --bf16 \
     --compile \
@@ -107,25 +109,45 @@ if [ "$TRAINING_FAILED" -eq 1 ]; then
     echo "❌ Error: Training run failed! Copying partial logs to GCS..."
 else
     echo "✅ Training completed successfully!"
+    
+    # Run post-training calibration using our newly integrated 12-View TTA-averaged temperature scaler
+    echo "🔬 Running post-training calibration (Expected Calibration Error optimization)..."
+    $PYTHON_BIN -u calibrate.py \
+        --weights-path "$WORKDIR/pytorch_cnn/model.pth" \
+        --data-dir "$WORKDIR/data/PetImages" \
+        --image-size 224 \
+        --batch-size 128 \
+        --attention-type se \
+        > "$WORKDIR/pytorch_cnn/calibration.log" 2>&1 || echo "⚠️ Warning: Calibration optimization returned an error."
 fi
 
-# 7. Upload checkpoints and logs to GCS
+# 7. Upload checkpoints, snapshots, calibration results, and logs to GCS
 echo "📤 Uploading weights, checkpoints, and logs to GCS..."
 if [ -f "$WORKDIR/pytorch_cnn/model.pth" ]; then
     gcloud storage cp "$WORKDIR/pytorch_cnn/model.pth" "gs://$BUCKET_NAME/$GCS_PREFIX/results/model_run11.pth" || true
 fi
-if [ -f "$WORKDIR/pytorch_cnn/model_swa.pth" ]; then
-    gcloud storage cp "$WORKDIR/pytorch_cnn/model_swa.pth" "gs://$BUCKET_NAME/$GCS_PREFIX/results/model_swa_run11.pth" || true
-fi
 if [ -f "$WORKDIR/pytorch_cnn/learning_curves.png" ]; then
     gcloud storage cp "$WORKDIR/pytorch_cnn/learning_curves.png" "gs://$BUCKET_NAME/$GCS_PREFIX/results/learning_curves_run11.png" || true
+fi
+if [ -f "$WORKDIR/pytorch_cnn/calibration_reliability.png" ]; then
+    gcloud storage cp "$WORKDIR/pytorch_cnn/calibration_reliability.png" "gs://$BUCKET_NAME/$GCS_PREFIX/results/calibration_reliability_run11.png" || true
+fi
+if [ -f "$WORKDIR/pytorch_cnn/temperature.txt" ]; then
+    gcloud storage cp "$WORKDIR/pytorch_cnn/temperature.txt" "gs://$BUCKET_NAME/$GCS_PREFIX/results/temperature_run11.txt" || true
 fi
 if [ -f "$WORKDIR/pytorch_cnn/training.log" ]; then
     gcloud storage cp "$WORKDIR/pytorch_cnn/training.log" "gs://$BUCKET_NAME/$GCS_PREFIX/results/training_run11.log" || true
 fi
+if [ -f "$WORKDIR/pytorch_cnn/calibration.log" ]; then
+    gcloud storage cp "$WORKDIR/pytorch_cnn/calibration.log" "gs://$BUCKET_NAME/$GCS_PREFIX/results/calibration_run11.log" || true
+fi
 if [ -f "/var/log/perceptronium_startup.log" ]; then
     gcloud storage cp "/var/log/perceptronium_startup.log" "gs://$BUCKET_NAME/$GCS_PREFIX/results/startup_run11.log" || true
 fi
+
+# Upload all epoch snapshots
+echo "📤 Uploading epoch snapshots to GCS..."
+gcloud storage cp "$WORKDIR/pytorch_cnn/model_epoch"*.pth "gs://$BUCKET_NAME/$GCS_PREFIX/results/" || true
 
 echo "=== PERCEPTRONIUM CLOUD TRAINING FINISHED ==="
 date

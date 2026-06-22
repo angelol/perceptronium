@@ -16,7 +16,7 @@ MACHINE_TYPE="g2-standard-4"
 IMAGE_PROJECT="deeplearning-platform-release"
 
 # Candidate zones with L4 GPU availability under our quotas
-ZONES=("us-west1-a" "us-west1-b" "us-west1-c" "us-central1-a" "us-central1-b" "us-central1-f")
+ZONES=("us-west1-a" "us-west1-b" "us-west1-c" "us-central1-a" "us-central1-b" "us-central1-c" "us-east1-b" "us-east1-c" "us-east1-d" "us-east4-a" "us-east4-c" "us-west4-a" "us-west4-c")
 
 echo "========================================="
 echo "⚙️  Starting GCP Spot VM Migration Pipeline"
