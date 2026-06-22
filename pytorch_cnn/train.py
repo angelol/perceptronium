@@ -565,7 +565,14 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, sche
 @torch.no_grad()
 def evaluate(model, dataloader, criterion, device, use_tta=True):
     """Evaluates the model on validation/testing set with optional Horizontal-Flip TTA."""
-    model.eval()
+    # Extract uncompiled model if it's compiled or wrapped in AveragedModel
+    eval_model = model
+    if hasattr(eval_model, "module"):
+        eval_model = eval_model.module
+    if hasattr(eval_model, "_orig_mod"):
+        eval_model = eval_model._orig_mod
+    eval_model.eval()
+    
     running_loss = 0.0
     correct = 0
     total = 0
@@ -575,14 +582,14 @@ def evaluate(model, dataloader, criterion, device, use_tta=True):
         inputs = inputs.to(device)
         labels = labels.to(device).unsqueeze(1)
         
-        logits = model(inputs)
+        logits = eval_model(inputs)
         loss = criterion(logits, labels)
         
         running_loss += loss.item() * inputs.size(0)
         
         if use_tta:
             inputs_flipped = torch.flip(inputs, dims=[3])
-            logits_flipped = model(inputs_flipped)
+            logits_flipped = eval_model(inputs_flipped)
             probs = 0.5 * (torch.sigmoid(logits) + torch.sigmoid(logits_flipped))
         else:
             probs = torch.sigmoid(logits)
@@ -602,7 +609,14 @@ def evaluate_advanced_tta(model, dataloader, criterion, device):
     Evaluates the model on validation/testing set with 12-View Center-Crop & Flip TTA.
     Uses 6 scales: [160, 192, 224, 256, 288, 320], averaging original and horizontal flip outputs.
     """
-    model.eval()
+    # Extract uncompiled model if it's compiled or wrapped in AveragedModel
+    eval_model = model
+    if hasattr(eval_model, "module"):
+        eval_model = eval_model.module
+    if hasattr(eval_model, "_orig_mod"):
+        eval_model = eval_model._orig_mod
+    eval_model.eval()
+    
     running_loss = 0.0
     correct = 0
     total = 0
@@ -613,7 +627,7 @@ def evaluate_advanced_tta(model, dataloader, criterion, device):
         labels = labels.to(device).unsqueeze(1)
         
         # Calculate standard loss (with base resolution)
-        logits = model(inputs)
+        logits = eval_model(inputs)
         loss = criterion(logits, labels)
         running_loss += loss.item() * inputs.size(0)
         
@@ -627,12 +641,12 @@ def evaluate_advanced_tta(model, dataloader, criterion, device):
             else:
                 inputs_scaled = inputs
                 
-            logits_orig = model(inputs_scaled)
+            logits_orig = eval_model(inputs_scaled)
             probs_orig = torch.sigmoid(logits_orig)
             all_probs.append(probs_orig)
             
             inputs_flipped = torch.flip(inputs_scaled, dims=[3])
-            logits_flipped = model(inputs_flipped)
+            logits_flipped = eval_model(inputs_flipped)
             probs_flipped = torch.sigmoid(logits_flipped)
             all_probs.append(probs_flipped)
             
