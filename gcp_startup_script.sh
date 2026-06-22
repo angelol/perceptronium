@@ -20,21 +20,23 @@ date
 BUCKET_NAME="ai-studio-bucket-734017220015-us-west1"
 GCS_PREFIX="perceptronium"
 
-# 2. Check if a local training checkpoint exists to prevent overwriting progress
-if [ -d "$WORKDIR/pytorch_cnn" ] && [ -f "$WORKDIR/pytorch_cnn/model_checkpoint_latest.pth" ]; then
-    echo "🔄 Detected existing training workspace and checkpoint from interrupted run!"
-    echo "⚠️ Bypassing download & extraction of code to protect local training progress."
+# 2. Check and extract datasets if they do not exist
+echo "📥 Checking datasets..."
+if [ -d "$WORKDIR/data/PetImages" ] && [ -d "$WORKDIR/cats_dogs_dataset" ]; then
+    echo "✓ Datasets already exist and are extracted."
 else
-    echo "📥 Downloading archives from GCS bucket: gs://$BUCKET_NAME..."
+    echo "📥 Downloading and extracting datasets from GCS..."
     gcloud storage cp "gs://$BUCKET_NAME/$GCS_PREFIX/data/PetImages.tar.gz" "$WORKDIR/data/PetImages.tar.gz"
     gcloud storage cp "gs://$BUCKET_NAME/$GCS_PREFIX/data/cats_dogs_dataset.tar.gz" "$WORKDIR/data/cats_dogs_dataset.tar.gz"
-    gcloud storage cp "gs://$BUCKET_NAME/$GCS_PREFIX/code/pytorch_cnn.tar.gz" "$WORKDIR/pytorch_cnn.tar.gz"
-
-    echo "📦 Extracting archives..."
     tar -xzf "$WORKDIR/data/PetImages.tar.gz" -C "$WORKDIR/data"
     tar -xzf "$WORKDIR/data/cats_dogs_dataset.tar.gz" -C "$WORKDIR"
-    tar -xzf "$WORKDIR/pytorch_cnn.tar.gz" -C "$WORKDIR"
 fi
+
+# Unconditionally download and extract the latest code to ensure we have the new train.py with resume logic
+# This will not overwrite any locally saved .pth checkpoints as they are not in the tarball
+echo "📥 Downloading and extracting latest training code..."
+gcloud storage cp "gs://$BUCKET_NAME/$GCS_PREFIX/code/pytorch_cnn.tar.gz" "$WORKDIR/pytorch_cnn.tar.gz"
+tar -xzf "$WORKDIR/pytorch_cnn.tar.gz" -C "$WORKDIR"
 
 # 3. Enter the PyTorch training workspace
 cd "$WORKDIR/pytorch_cnn"
