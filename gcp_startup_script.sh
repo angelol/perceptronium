@@ -20,16 +20,21 @@ date
 BUCKET_NAME="ai-studio-bucket-734017220015-us-west1"
 GCS_PREFIX="perceptronium"
 
-# 2. Download code and datasets from GCS
-echo "📥 Downloading archives from GCS bucket: gs://$BUCKET_NAME..."
-gcloud storage cp "gs://$BUCKET_NAME/$GCS_PREFIX/data/PetImages.tar.gz" "$WORKDIR/data/PetImages.tar.gz"
-gcloud storage cp "gs://$BUCKET_NAME/$GCS_PREFIX/data/cats_dogs_dataset.tar.gz" "$WORKDIR/data/cats_dogs_dataset.tar.gz"
-gcloud storage cp "gs://$BUCKET_NAME/$GCS_PREFIX/code/pytorch_cnn.tar.gz" "$WORKDIR/pytorch_cnn.tar.gz"
+# 2. Check if a local training checkpoint exists to prevent overwriting progress
+if [ -d "$WORKDIR/pytorch_cnn" ] && [ -f "$WORKDIR/pytorch_cnn/model_checkpoint_latest.pth" ]; then
+    echo "🔄 Detected existing training workspace and checkpoint from interrupted run!"
+    echo "⚠️ Bypassing download & extraction of code to protect local training progress."
+else
+    echo "📥 Downloading archives from GCS bucket: gs://$BUCKET_NAME..."
+    gcloud storage cp "gs://$BUCKET_NAME/$GCS_PREFIX/data/PetImages.tar.gz" "$WORKDIR/data/PetImages.tar.gz"
+    gcloud storage cp "gs://$BUCKET_NAME/$GCS_PREFIX/data/cats_dogs_dataset.tar.gz" "$WORKDIR/data/cats_dogs_dataset.tar.gz"
+    gcloud storage cp "gs://$BUCKET_NAME/$GCS_PREFIX/code/pytorch_cnn.tar.gz" "$WORKDIR/pytorch_cnn.tar.gz"
 
-echo "📦 Extracting archives..."
-tar -xzf "$WORKDIR/data/PetImages.tar.gz" -C "$WORKDIR/data"
-tar -xzf "$WORKDIR/data/cats_dogs_dataset.tar.gz" -C "$WORKDIR"
-tar -xzf "$WORKDIR/pytorch_cnn.tar.gz" -C "$WORKDIR"
+    echo "📦 Extracting archives..."
+    tar -xzf "$WORKDIR/data/PetImages.tar.gz" -C "$WORKDIR/data"
+    tar -xzf "$WORKDIR/data/cats_dogs_dataset.tar.gz" -C "$WORKDIR"
+    tar -xzf "$WORKDIR/pytorch_cnn.tar.gz" -C "$WORKDIR"
+fi
 
 # 3. Enter the PyTorch training workspace
 cd "$WORKDIR/pytorch_cnn"
@@ -103,6 +108,7 @@ $PYTHON_BIN -u train.py \
     --data-dir "$WORKDIR/data/PetImages" \
     --extra-dir "$WORKDIR/cats_dogs_dataset" \
     --weights-path "$WORKDIR/pytorch_cnn/model.pth" \
+    --resume \
     > "$WORKDIR/pytorch_cnn/training.log" 2>&1 || TRAINING_FAILED=1
 
 if [ "$TRAINING_FAILED" -eq 1 ]; then

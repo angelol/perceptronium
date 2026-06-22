@@ -674,6 +674,7 @@ def main():
     parser.add_argument("--bf16", action="store_true", help="Enable Native Bfloat16 Mixed Precision (recommended for L4)")
     parser.add_argument("--compile", action="store_true", help="Enable torch.compile model compilation")
     parser.add_argument("--compile-mode", type=str, default="default", choices=["default", "reduce-overhead", "max-autotune"], help="torch.compile mode")
+    parser.add_argument("--resume", action="store_true", help="Enable auto-resume if checkpoint exists")
     args = parser.parse_args()
     
     set_seed(args.seed)
@@ -869,17 +870,36 @@ def main():
     }
     best_test_acc = 0.0
     
+    # Initialize EMA shadow weights
+    ema = ExponentialMovingAverage(model, decay=0.999)
+    
+    # Resume training state if requested and checkpoint exists
+    start_epoch = 1
+    checkpoint_path = args.weights_path.replace(".pth", "_checkpoint_latest.pth")
+    if args.resume and os.path.exists(checkpoint_path):
+        print(f"🔄 Found latest checkpoint: {checkpoint_path}. Resuming training...", flush=True)
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if scheduler is not None and "scheduler_state_dict" in checkpoint and checkpoint["scheduler_state_dict"] is not None:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        if "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
+            ema.load_state_dict(checkpoint["ema_state_dict"])
+        if args.swa and "swa_model_state_dict" in checkpoint and checkpoint["swa_model_state_dict"] is not None:
+            swa_model.load_state_dict(checkpoint["swa_model_state_dict"])
+        best_test_acc = checkpoint.get("best_test_acc", 0.0)
+        history = checkpoint.get("history", history)
+        start_epoch = checkpoint["epoch"] + 1
+        print(f"✓ Successfully resumed from Epoch {checkpoint['epoch']} with Best Test Acc: {best_test_acc:.2f}%", flush=True)
+        
     print("+" + "-"*96 + "+")
     print("| Epoch    | Train Loss | Train Acc | Test Loss  | Test Acc   | Learning Rate | Epoch Time (sec) |")
     print("+" + "-"*96 + "+")
     
-    # Initialize EMA shadow weights
-    ema = ExponentialMovingAverage(model, decay=0.999)
-    
     current_size = args.image_size
     current_bs = args.batch_size
     
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         start_time = time.time()
         
         # Reconstruct dataloaders for Progressive Resizing
@@ -1014,6 +1034,22 @@ def main():
                 torch.save(model.state_dict(), snapshot_path)
                 ema.restore()
                 print(f"📸 Saved snapshot checkpoint (EMA weights): {snapshot_path}", flush=True)
+                
+        # Save continuous checkpoint for resiliency/auto-resume
+        checkpoint_path = args.weights_path.replace(".pth", "_checkpoint_latest.pth")
+        checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
+            "best_test_acc": best_test_acc,
+            "history": history,
+            "ema_state_dict": ema.state_dict(),
+        }
+        if args.swa:
+            checkpoint["swa_model_state_dict"] = swa_model.state_dict()
+        torch.save(checkpoint, checkpoint_path)
+        print(f"📸 Saved latest training state checkpoint to: {checkpoint_path}", flush=True)
             
     print("+" + "-"*96 + "+")
     print(f"✓ Training complete! Best Validation Accuracy achieved (with 6-View TTA): {best_test_acc:.2f}%")
