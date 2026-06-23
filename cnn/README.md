@@ -28,21 +28,50 @@ graph TD
 
 * **Input Image:** Standardized grayscale tensor $\mathbf{X}$ of dimension $128 \times 128$ pixels.
 * **Conv Layer 1:** Convolves the single-channel input using $8$ filters of size $3 \times 3$ with stride $1$ and no padding:
-  $$\mathbf{H}^{(1)}_{f} = \text{ReLU}\left(\mathbf{X} * \mathbf{K}^{(1)}_{f} + b^{(1)}_{f}\right) \quad \forall f \in [1, 8]$$
-  This outputs $8$ feature maps of dimension $126 \times 126$.
+
+$$
+\mathbf{H}^{(1)}_{f} = \text{ReLU}\left(\mathbf{X} * \mathbf{K}^{(1)}_{f} + b^{(1)}_{f}\right) \quad \forall f \in [1, 8]
+$$
+
+This outputs $8$ feature maps of dimension $126 \times 126$.
+
 * **Max Pooling 1:** Downscales the spatial resolution using a $2 \times 2$ window with stride $2$:
-  $$\mathbf{P}^{(1)}_{f}(i,j) = \max \left( \mathbf{H}^{(1)}_{f}(2i:2i+2, \, 2j:2j+2) \right)$$
-  Tracks and caches the exact argmax indices $(r, c)$ inside each pooling window to feed precise gradients backward. This outputs $8$ maps of dimension $63 \times 63$.
+
+$$
+\mathbf{P}^{(1)}_{f}(i,j) = \max \left( \mathbf{H}^{(1)}_{f}(2i:2i+2, \, 2j:2j+2) \right)
+$$
+
+Tracks and caches the exact argmax indices $(r, c)$ inside each pooling window to feed precise gradients backward. This outputs $8$ maps of dimension $63 \times 63$.
+
 * **Conv Layer 2:** Convolves the 8-channel pooled feature maps using $16$ filters of dimension $3 \times 3 \times 8$:
-  $$\mathbf{H}^{(2)}_{g} = \text{ReLU}\left( \sum_{f=1}^{8} \mathbf{P}^{(1)}_{f} * \mathbf{K}^{(2)}_{g, f} + b^{(2)}_{g} \right) \quad \forall g \in [1, 16]$$
-  This outputs $16$ feature maps of dimension $61 \times 61$.
+
+$$
+\mathbf{H}^{(2)}_{g} = \text{ReLU}\left( \sum_{f=1}^{8} \mathbf{P}^{(1)}_{f} * \mathbf{K}^{(2)}_{g, f} + b^{(2)}_{g} \right) \quad \forall g \in [1, 16]
+$$
+
+This outputs $16$ feature maps of dimension $61 \times 61$.
+
 * **Max Pooling 2:** Downscales using another $2 \times 2$ window with stride $2$, outputting $16$ maps of size $30 \times 30$ ($14,400$ flattened elements).
+
 * **Dense Hidden Layer:** Fully connected feedforward layer mapping the flattened spatial features ($14,400$) to $64$ hidden units:
-  $$\mathbf{z}_d = \mathbf{W}_d \cdot \text{flatten}(\mathbf{P}^{(2)}) + \mathbf{b}_d$$
-  $$\mathbf{a}_d = \max(0, \, \mathbf{z}_d) \quad \text{(ReLU Activation)}$$
+
+$$
+\mathbf{z}_d = \mathbf{W}_d \cdot \text{flatten}(\mathbf{P}^{(2)}) + \mathbf{b}_d
+$$
+
+$$
+\mathbf{a}_d = \max(0, \, \mathbf{z}_d) \quad \text{(ReLU Activation)}
+$$
+
 * **Output Classification:** Projects the hidden neurons to a single probability output:
-  $$z_o = \mathbf{w}_o \cdot \mathbf{a}_d + b_o$$
-  $$p = \sigma(z_o) = \frac{1}{1 + e^{-z_o}} \quad \text{(Cat/Dog Probability)}$$
+
+$$
+z_o = \mathbf{w}_o \cdot \mathbf{a}_d + b_o
+$$
+
+$$
+p = \sigma(z_o) = \frac{1}{1 + e^{-z_o}} \quad \text{(Cat/Dog Probability)}
+$$
 
 ---
 
@@ -51,20 +80,44 @@ graph TD
 The backpropagation engine computes partial derivatives analytically using the chain rule, convolving gradients backward and mapping errors precisely onto the network weights:
 
 1. **Loss Function (Binary Cross-Entropy):**
-   $$\mathcal{L} = - [y \ln(p) + (1 - y) \ln(1 - p)]$$
+
+$$
+\mathcal{L} = - [y \ln(p) + (1 - y) \ln(1 - p)]
+$$
+
 2. **Output Error ($\delta_o$):**
-   $$\delta_o = \frac{\partial \mathcal{L}}{\partial z_o} = p - y$$
+
+$$
+\delta_o = \frac{\partial \mathcal{L}}{\partial z_o} = p - y
+$$
+
 3. **Dense Hidden Layer Error ($\boldsymbol{\delta}_d$):**
-   $$\boldsymbol{\delta}_d = \left( \mathbf{w}_o \cdot \delta_o \right) \odot \text{ReLU}'(\mathbf{z}_d)$$
-   $$\text{where } \text{ReLU}'(x) = \begin{cases} 1 & \text{if } x > 0 \\ 0 & \text{if } x \le 0 \end{cases}$$
+
+$$
+\boldsymbol{\delta}_d = \left( \mathbf{w}_o \cdot \delta_o \right) \odot \text{ReLU}'(\mathbf{z}_d)
+$$
+
+$$
+\text{where } \text{ReLU}'(x) = \begin{cases} 1 & \text{if } x > 0 \\ 0 & \text{if } x \le 0 \end{cases}
+$$
+
 4. **Flattened Feature Error ($\boldsymbol{\delta}_f$):**
-   $$\boldsymbol{\delta}_f = \mathbf{W}_d^T \cdot \boldsymbol{\delta}_d$$
-5. **Conv Layer 2 Gradients:**
-   Gradients are propagated back through the Max Pooling 2 layers by scattering values only to the stored argmax indices. The spatial gradient with respect to the Conv2 kernel is calculated using the convolved inputs:
-   $$\frac{\partial \mathcal{L}}{\partial \mathbf{K}^{(2)}_{g, f}} = \mathbf{P}^{(1)}_{f} * \boldsymbol{\delta}^{(2)}_{g}$$
-6. **L2 Regularization (Weight Decay):**
-   To mitigate overfitting, we apply L2 regularization ($\lambda = 0.001$) to the dense weights during SGD updates:
-   $$\mathbf{W}_d \leftarrow \mathbf{W}_d - \eta \left( \frac{\partial \mathcal{L}}{\partial \mathbf{W}_d} + \lambda \mathbf{W}_d \right)$$
+
+$$
+\boldsymbol{\delta}_f = \mathbf{W}_d^T \cdot \boldsymbol{\delta}_d
+$$
+
+5. **Conv Layer 2 Gradients:** Gradients are propagated back through the Max Pooling 2 layers by scattering values only to the stored argmax indices. The spatial gradient with respect to the Conv2 kernel is calculated using the convolved inputs:
+
+$$
+\frac{\partial \mathcal{L}}{\partial \mathbf{K}^{(2)}_{g, f}} = \mathbf{P}^{(1)}_{f} * \boldsymbol{\delta}^{(2)}_{g}
+$$
+
+6. **L2 Regularization (Weight Decay):** To mitigate overfitting, we apply L2 regularization ($\lambda = 0.001$) to the dense weights during SGD updates:
+
+$$
+\mathbf{W}_d \leftarrow \mathbf{W}_d - \eta \left( \frac{\partial \mathcal{L}}{\partial \mathbf{W}_d} + \lambda \mathbf{W}_d \right)
+$$
 
 ---
 

@@ -27,8 +27,13 @@ graph TD
 ### Key Architectural Innovation: Dual Attention (CBAM)
 Each `MBConvCBAM` block incorporates the **Convolutional Block Attention Module (CBAM)** to adaptively highlight both diagnostic channels and descriptive spatial regions:
 
-$$\mathbf{F}' = \mathbf{M}_c(\mathbf{F}) \otimes \mathbf{F}$$
-$$\mathbf{F}'' = \mathbf{M}_s(\mathbf{F}') \otimes \mathbf{F}'$$
+$$
+\mathbf{F}' = \mathbf{M}_c(\mathbf{F}) \otimes \mathbf{F}
+$$
+
+$$
+\mathbf{F}'' = \mathbf{M}_s(\mathbf{F}') \otimes \mathbf{F}'
+$$
 
 1. **Channel Attention ($\mathbf{M}_c$):** Uses both global average pooling and global max pooling, passing results through a shared multi-layer perceptron (MLP) to determine channel-wise importance.
 2. **Spatial Attention ($\mathbf{M}_s$):** Pools channel dimensions (average and max) to form a 2-channel spatial map, convolving it with a $7 \times 7$ kernel to emphasize *where* the animal's features (e.g., eyes, whiskers, ears) are located.
@@ -44,7 +49,11 @@ To prevent overfitting when training a large 24M-parameter network on a modest s
 * **Mixup & CutMix Cooldown:** Randomly interpolates images and labels during active phases ($\alpha=0.2$ and $\alpha=1.0$). We completely disable Mixup/CutMix in the final 20 epochs (the "cooldown" phase) to let the network sharpen decision boundaries.
 * **Lookahead-AdamW Optimizer:** Wraps `AdamW` with a Lookahead tracker ($k=5, \alpha=0.5$) that maintains a set of "slow weights" to escape suboptimal local minima and smooth loss trajectories.
 * **Post-Hoc Calibration (Temperature Scaling):** Corrects model overconfidence by optimizing a temperature parameter $T$ on the validation set using L-BFGS, minimizing Expected Calibration Error (ECE):
-  $$\hat{p}_i = \sigma\left(\frac{z_i}{T}\right) \quad \text{with } T = 1.409243$$
+
+$$
+\hat{p}_i = \sigma\left(\frac{z_i}{T}\right) \quad \text{with } T = 1.409243
+$$
+
 * **Test-Time Augmentation (TTA):** Runs inference on 12 multi-view crops and horizontal flips of each input image, averaging predicted logits for incredibly stable evaluations.
 
 ---
