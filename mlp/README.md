@@ -21,18 +21,31 @@ The only dependency used is the standard Rust `image` crate, solely for loading 
 
 ### 1. Sigmoid Activation Function
 Activates hidden and output layers, scaling inputs to a probability-like range `(0.0, 1.0)`:
-$$\sigma(x) = \frac{1}{1 + e^{-x}}$$
+
+$$
+\sigma(x) = \frac{1}{1 + e^{-x}}
+$$
 
 Its derivative, used during backpropagation to distribute errors through the layers:
-$$\sigma'(x) = \sigma(x) \cdot (1 - \sigma(x))$$
+
+$$
+\sigma'(x) = \sigma(x) \cdot (1 - \sigma(x))
+$$
 
 ### 2. Binary Cross-Entropy (BCE) Loss
 Used to measure classification performance for binary labels ($0.0 = \text{Cat}$, $1.0 = \text{Dog}$):
-$$\mathcal{L} = - [y \ln(p) + (1 - y) \ln(1 - p)]$$
+
+$$
+\mathcal{L} = - [y \ln(p) + (1 - y) \ln(1 - p)]
+$$
 
 ### 3. Backpropagation Simplification
 When using BCE loss coupled with a Sigmoid output activation, the partial derivative of the loss function with respect to the output pre-activation ($z_o$) simplifies analytically to:
-$$\frac{\partial \mathcal{L}}{\partial z_o} = p - y$$
+
+$$
+\frac{\partial \mathcal{L}}{\partial z_o} = p - y
+$$
+
 *(Where $p$ is the prediction score and $y$ is the target label, ensuring numerical stability and avoiding division-by-zero errors during training).*
 
 ---
