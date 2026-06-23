@@ -79,6 +79,19 @@ python3 pytorch_cnn/web_server.py
 ```
 Open **[http://127.0.0.1:8080](http://127.0.0.1:8080)** in your browser!
 
+### 4. Cloud Training on Google Cloud (Optional)
+To train the state-of-the-art model on a GCP Spot GPU VM (NVIDIA L4):
+1. **Configure Environment Variables**:
+   Copy the example environment file to `.env` and configure your GCP project, bucket, and regional settings:
+   ```bash
+   cp .env.example .env
+   ```
+2. **Run the Training Orchestrator**:
+   Launch the orchestrator script to automatically archive and upload local datasets/code, provision a Spot VM with 1x NVIDIA L4 GPU across candidate zones, and run training in the background:
+   ```bash
+   ./gcp_run_training.sh
+   ```
+
 ---
 
 ## 🔬 Performance Comparison

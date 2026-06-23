@@ -21,7 +21,7 @@ if [ -f "$WORKSPACE_DIR/.env" ]; then
     done < "$WORKSPACE_DIR/.env"
 else
     echo "❌ Error: $WORKSPACE_DIR/.env file not found!"
-    echo "👉 Please copy .env.template to .env and configure your GCP credentials."
+    echo "👉 Please copy .env.example to .env and configure your GCP credentials."
     exit 1
 fi
 
