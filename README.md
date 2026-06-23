@@ -1,84 +1,96 @@
 # Perceptronium 🌌
 
-Perceptronium is an educational sandbox consisting of zero-dependency, from-scratch neural network implementations in pure Rust. The goal of this project is to explore how machine learning models function under the hood by implementing all linear algebra, forward/backward passes, and training loops completely from first principles.
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Rust CI](https://github.com/angelol/perceptronium/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/angelol/perceptronium/actions)
+[![Python CI](https://github.com/angelol/perceptronium/actions/workflows/python-ci.yml/badge.svg)](https://github.com/angelol/perceptronium/actions)
 
-No external libraries (like `ndarray`, `serde`, `clap`, or deep learning frameworks) are used for model architecture or training, keeping the codebase completely clean, readable, and highly educational. We only use the standard `image` crate solely for loading and aspect-ratio scaling of JPEG/PNG files.
+**Perceptronium** is an educational deep learning sandbox tracing the evolution of image classifiers from first principles. It guides you from building zero-dependency CPU-bound neural networks in pure Rust to training state-of-the-art hybrid Attention-Transformer models on GPUs, culminating in an exquisite local Web Explorer dashboard.
 
 ---
 
-## 📂 Project Structure
+## 🧭 The Evolution of Perceptronium
 
-This project is organized as a Cargo workspace:
+```text
+┌─────────────────────────────────┐      ┌──────────────────────────────────┐      ┌─────────────────────────────────┐
+│     Phase 1: Pure Rust CPU      │ ───> │   Phase 2: PyTorch GPU (MPS)     │ ───> │     Phase 3: Web Dashboard      │
+│  Zero-dependency feedforward    │      │  CBAM-EfficientNet Attention     │      │   Glassmorphic real-time local  │
+│  MLP and CNN from scratch       │      │  regularized SWA model (93.3%)   │      │  inference web server explorer  │
+└─────────────────────────────────┘      └──────────────────────────────────┘      └─────────────────────────────────┘
+```
+
+---
+
+## 🚀 Key Features
+
+* **🦀 Phase 1: Pure Rust CPU Sandboxes (`mlp/` & `cnn/`)**
+  * Complete zero-dependency implementations of fully connected Layer networks (MLP) and Convolutional Neural Networks (CNN) with backpropagation.
+  * Implemented linear algebra, convolutional sliding kernels, max-pooling, L2 regularization, and image transformations in raw Rust with no third-party linear algebra libraries.
+* **🔥 Phase 2: PyTorch Hardware-Accelerated Pipelines (`pytorch_cnn/`)**
+  * Deployed an advanced, 24.31M parameter **CBAM-EfficientNet v4** block architecture featuring Depthwise Inverted Bottlenecks, Convolutional Block Attention Modules (CBAM), and Stochastic Depth.
+  * Accelerated via macOS **Metal Performance Shaders (MPS)** and cloud-based NVIDIA **CUDA** backends.
+  * Uses advanced regularizations: Stochastic Weight Averaging (SWA), Post-hoc Probability Temperature Calibration, Test-Time Augmentation (TTA), and CutMix/Mixup data-blending.
+* **🌐 Phase 3: Exquisite Cybernetic Local Web UI (`pytorch_cnn/web_server.py`)**
+  * A self-contained, zero-dependency local server written utilizing standard Python libraries.
+  * Hosts a premium, glassmorphic dark-themed user interface to interact with the trained neural model in real-time.
+  * Features high-performance binary-byte streaming uploads, predicted class glowing badges, and an interactive continuous dog-vs-cat probability slider scale.
+
+---
+
+## 📂 Repository Structure
 
 ```text
 perceptronium/
-├── data/                             # Centralized dataset folder (shared by all approaches)
-│   └── cats_and_dogs_filtered/       # ~68MB filtered dataset of dogs and cats images
-├── mlp/                              # Approach 1: Multi-Layer Perceptron (Fully Connected Dense)
-│   ├── src/                          # MLP training and inference logic
-│   ├── weights.txt                   # Saved weights for the trained MLP model
-│   └── README.md                     # MLP-specific manual and explanations
-├── cnn/                              # Approach 2: Convolutional Neural Network (CNN)
-│   ├── src/                          # CNN layers, backpropagation, and CLI logic
-│   ├── weights.txt                   # Saved weights for the trained CNN model
-│   └── README.md                     # CNN-specific manual and explanations
-└── README.md                         # This file (Workspace-level overview)
+├── mlp/                  # Rust CPU Multi-Layer Perceptron (Fully Connected)
+│   ├── src/              # Raw Rust matrix algebra & backpropagation
+│   └── README.md         # Mathematical overview and CLI guide
+├── cnn/                  # Rust CPU Convolutional Neural Network
+│   ├── src/              # Raw sliding kernel convs, max pooling, & backpropagation
+│   └── README.md         # CNN layers & CLI guide
+├── pytorch_cnn/          # PyTorch Accelerated GPU Pipeline & Web UI
+│   ├── model.py          # CBAM-EfficientNet attention-transformer architecture
+│   ├── train.py          # PyTorch training pipeline with CutMix, Mixup, and OneCycleLR
+│   ├── predict.py        # ASCII terminal art visualizer & CLI predictor
+│   ├── predict_ensemble.py # SWA snapshots & Calibrated ensembling engine
+│   └── web_server.py     # Zero-dependency HTTP server & Glassmorphic UI dashboard
+└── README.md             # This file (Project landing page)
 ```
 
 ---
 
-## 🧠 Implemented Approaches
+## 🛠️ Quick Start
 
-### 1. Multi-Layer Perceptron (MLP)
-* **Location:** [`mlp/`](file:///Users/al/Projects/angelo/perceptronium/mlp)
-* **Description:** A feedforward neural network utilizing standard dense layers, Sigmoid activation functions, and gradient descent via backpropagation.
-* **Input Resolution:** Resizes images to $64 \times 64$ pixels in grayscale ($4,096$ input nodes).
-* **Execution Commands:**
-  * **Train the model:**
-    ```bash
-    cargo run -p perceptronium-mlp --release -- --train
-    ```
-  * **Evaluate the model on validation set:**
-    ```bash
-    cargo run -p perceptronium-mlp --release -- --eval
-    ```
+### 1. Clone & Set Up
+```bash
+git clone https://github.com/angelol/perceptronium.git
+cd perceptronium
+```
 
-### 2. Convolutional Neural Network (CNN)
-* **Location:** [`cnn/`](file:///Users/al/Projects/angelo/perceptronium/cnn)
-* **Description:** A custom-built convolutional network featuring $3 \times 3$ kernel convolutions, ReLU activation maps, $2 \times 2$ Max Pooling, flattening, and a fully connected Sigmoid dense backpropagation classifier.
-* **Input Resolution:** Resizes images to $128 \times 128$ pixels in grayscale ($16,384$ input nodes).
-* **Execution Commands:**
-  * **Train the model:**
-    ```bash
-    cargo run -p perceptronium-cnn --release -- --train
-    ```
-  * **Evaluate the model on validation set:**
-    ```bash
-    cargo run -p perceptronium-cnn --release -- --eval
-    ```
-  * **Interactive Playground:**
-    ```bash
-    cargo run -p perceptronium-cnn --release -- --play
-    ```
+### 2. Run Pure Rust Sandboxes
+```bash
+# Run the zero-dependency Rust CNN validation playground
+cargo run -p perceptronium-cnn --release -- --play
+```
+
+### 3. Start PyTorch Web UI Explorer
+To experience the GPU-accelerated local model explorer (make sure to download weights as instructed):
+```bash
+# Start the web server
+python3 pytorch_cnn/web_server.py
+```
+Open **[http://127.0.0.1:8080](http://127.0.0.1:8080)** in your browser!
 
 ---
 
-## 🛠️ Workspace Commands
+## 🔬 Performance Comparison
 
-You can run workspace-level commands from the root directory:
+| Model | Hardware | Input Size | Params | Acc | Regularizations |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Rust MLP** | CPU (Single-thread) | $64 \times 64$ Gray | ~131K | $50.00\%$ | None |
+| **Rust CNN** | CPU (Single-thread) | $128 \times 128$ Gray | ~924K | $68.35\%$ | L2 Weight Decay |
+| **Custom Residual** | Metal GPU (MPS) | $224 \times 224$ RGB | ~4.91M | $87.60\%$ | Dropout, Weight Decay |
+| **CBAM-EfficientNet v2**| Metal GPU (MPS) | $224 \times 224$ RGB | ~8.68M | **`93.30%`**| SWA, Mixup, CutMix, Calibration |
 
-### Run Unit Tests
-To run all tests in the workspace (all approaches):
-```bash
-cargo test
-```
+---
 
-### Run a Specific Subproject
-To run a specific approach, use the `-p` (package) flag followed by the package name:
-```bash
-cargo run -p perceptronium-mlp --release -- [ARGS]
-```
-or
-```bash
-cargo run -p perceptronium-cnn --release -- [ARGS]
-```
+## 📜 License
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
