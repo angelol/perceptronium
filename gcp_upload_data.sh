@@ -4,8 +4,30 @@ set -euo pipefail
 # GCP Upload Dataset and Code Script
 # Coordinates archive and upload of code + datasets to Google Cloud Storage (GCS)
 
-BUCKET_NAME="ai-studio-bucket-734017220015-us-west1"
-GCS_PREFIX="perceptronium"
+# Locate workspace root dynamically
+WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Load and export environment variables from .env
+if [ -f "$WORKSPACE_DIR/.env" ]; then
+    echo "🔑 Loading environment variables from .env..."
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip comments and empty lines
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line// }" ]] && continue
+        # Strip any leading/trailing whitespace
+        line=$(echo "$line" | xargs)
+        # Export the key/value pair
+        export "$line"
+    done < "$WORKSPACE_DIR/.env"
+else
+    echo "❌ Error: $WORKSPACE_DIR/.env file not found!"
+    echo "👉 Please copy .env.template to .env and configure your GCP credentials."
+    exit 1
+fi
+
+BUCKET_NAME="${GCP_BUCKET_NAME:-ai-studio-bucket-734017220015-us-west1}"
+GCS_PREFIX="${GCP_GCS_PREFIX:-perceptronium}"
+CATS_DOGS_DATASET_DIR="${LOCAL_CATS_DOGS_DATASET_DIR:-/Users/al/Projects/angelo/cats_dogs_dataset}"
 
 echo "========================================="
 echo "🚀 Preparing resources for GCP Training Run"
@@ -14,10 +36,6 @@ echo "========================================="
 # 1. Setup temporary directory for archives
 TEMP_DIR=$(mktemp -d -t perceptronium_gcp_XXXXXX)
 trap 'echo "🧹 Cleaning up temporary archives..."; rm -rf "$TEMP_DIR"' EXIT
-
-# Paths
-WORKSPACE_DIR="/Users/al/Projects/angelo/perceptronium"
-CATS_DOGS_DATASET_DIR="/Users/al/Projects/angelo/cats_dogs_dataset"
 
 echo "📂 Temporary directory: $TEMP_DIR"
 
@@ -39,7 +57,7 @@ echo "✓ Primary dataset archived. Size: $(du -sh "$TEMP_DIR/PetImages.tar.gz" 
 
 # 4. Archive extra high-quality cats_dogs_dataset
 echo "📦 Archiving extra high-quality cats_dogs_dataset..."
-tar -czf "$TEMP_DIR/cats_dogs_dataset.tar.gz" -C "/Users/al/Projects/angelo" cats_dogs_dataset
+tar -czf "$TEMP_DIR/cats_dogs_dataset.tar.gz" -C "$(dirname "$CATS_DOGS_DATASET_DIR")" "$(basename "$CATS_DOGS_DATASET_DIR")"
 echo "✓ Extra dataset archived. Size: $(du -sh "$TEMP_DIR/cats_dogs_dataset.tar.gz" | cut -f1)"
 
 # 5. Archive training code (excluding virtual envs, caches, checkpoints, and curves)

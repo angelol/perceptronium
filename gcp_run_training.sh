@@ -8,12 +8,33 @@ set -euo pipefail
 # 3. Spot VM creation with 1x NVIDIA L4 GPU with robust multi-zone fallback.
 # 4. Startup-script attachment and background execution.
 
-PROJECT_ID="ems-spons"
-BUCKET_NAME="ai-studio-bucket-734017220015-us-west1"
-GCS_PREFIX="perceptronium"
-INSTANCE_NAME="perceptronium-training-l4"
-MACHINE_TYPE="g2-standard-4"
-IMAGE_PROJECT="deeplearning-platform-release"
+# Locate workspace root dynamically
+WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Load and export environment variables from .env
+if [ -f "$WORKSPACE_DIR/.env" ]; then
+    echo "🔑 Loading environment variables from .env..."
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip comments and empty lines
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line// }" ]] && continue
+        # Strip any leading/trailing whitespace
+        line=$(echo "$line" | xargs)
+        # Export the key/value pair
+        export "$line"
+    done < "$WORKSPACE_DIR/.env"
+else
+    echo "❌ Error: $WORKSPACE_DIR/.env file not found!"
+    echo "👉 Please copy .env.template to .env and configure your GCP credentials."
+    exit 1
+fi
+
+PROJECT_ID="${GCP_PROJECT_ID:-ems-spons}"
+BUCKET_NAME="${GCP_BUCKET_NAME:-ai-studio-bucket-734017220015-us-west1}"
+GCS_PREFIX="${GCP_GCS_PREFIX:-perceptronium}"
+INSTANCE_NAME="${GCP_INSTANCE_NAME:-perceptronium-training-l4}"
+MACHINE_TYPE="${GCP_MACHINE_TYPE:-g2-standard-4}"
+IMAGE_PROJECT="${GCP_IMAGE_PROJECT:-deeplearning-platform-release}"
 
 # Candidate zones with L4 GPU availability under our quotas
 ZONES=("us-west1-a" "us-west1-b" "us-west1-c" "us-central1-a" "us-central1-b" "us-central1-c" "us-east1-b" "us-east1-c" "us-east1-d" "us-east4-a" "us-east4-c" "us-west4-a" "us-west4-c")
@@ -91,7 +112,8 @@ for ZONE in "${ZONES[@]}"; do
         --image-project="$IMAGE_PROJECT" \
         --boot-disk-size=100GB \
         --boot-disk-type=pd-ssd \
-        --metadata-from-file=startup-script=gcp_startup_script.sh; then
+        --metadata-from-file=startup-script=gcp_startup_script.sh \
+        --metadata="bucket-name=$BUCKET_NAME,gcs-prefix=$GCS_PREFIX"; then
         
         CHOSEN_ZONE="$ZONE"
         SUCCESS=true

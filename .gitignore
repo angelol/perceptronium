@@ -37,3 +37,7 @@
 **/*.mlpackage
 **/*.mlmodel
 
+# Environment Files
+.env
+.env.local
+

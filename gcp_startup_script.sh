@@ -16,9 +16,16 @@ exec > >(tee -i /var/log/perceptronium_startup.log) 2>&1
 echo "=== PERCEPTRONIUM GCP STARTUP RUN STARTING ==="
 date
 
-# GCS Bucket Config
-BUCKET_NAME="ai-studio-bucket-734017220015-us-west1"
-GCS_PREFIX="perceptronium"
+# GCS Bucket Config (retrieved dynamically from VM metadata with fallback defaults)
+BUCKET_NAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/bucket-name" || true)
+GCS_PREFIX=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/gcs-prefix" || true)
+
+if [ -z "$BUCKET_NAME" ]; then
+    BUCKET_NAME="ai-studio-bucket-734017220015-us-west1"
+fi
+if [ -z "$GCS_PREFIX" ]; then
+    GCS_PREFIX="perceptronium"
+fi
 
 # 2. Check and extract datasets if they do not exist
 echo "📥 Checking datasets..."
