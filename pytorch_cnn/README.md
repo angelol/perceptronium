@@ -29,9 +29,6 @@ graph TD
         GAP --> Classifier["Linear Classifier Layer (Dropout 0.3, 1536 to 1 Logit)"]
         Classifier --> Output["Output Probabilities (Sigmoid Activation)"]
     end
-
-    style CNN_Backbone fill:#111522,stroke:#2a3a5c,stroke-width:2px;
-    style Attention_Classification fill:#1f1122,stroke:#512a5c,stroke-width:2px;
 ```
 
 ### Key Architectural Innovation: Dual Attention (CBAM)
