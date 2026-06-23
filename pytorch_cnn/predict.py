@@ -104,7 +104,13 @@ def main():
     # Instantiate and load model
     model = CustomCNN(attention_type=args.attention_type).to(device)
     try:
-        model.load_state_dict(torch.load(weights_path, map_location=device))
+        state_dict = torch.load(weights_path, map_location=device)
+        # Strip torch.compile '_orig_mod.' prefix if present
+        clean_state_dict = {}
+        for k, v in state_dict.items():
+            clean_key = k.replace('_orig_mod.', '')
+            clean_state_dict[clean_key] = v
+        model.load_state_dict(clean_state_dict)
         print("✓ Model weights loaded successfully!")
     except Exception as e:
         print(f"❌ Failed to load model weights: {e}")
