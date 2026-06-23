@@ -12,16 +12,26 @@ Our top-performing model (**Run 11, ~24.31M parameters**) combines convolutional
 
 ```mermaid
 graph TD
-    Input["Input (Progressive: 160x160 -> 224x224 -> 288x288)"] --> Stem["Stem Conv (3x3, Stride=2)"]
-    Stem --> Stage1["Stage 1: Fused-MBConv Block (no Expansion)"]
-    Stage1 --> Stage2["Stage 2: MBConvCBAM (Expansion x4, 3x3)"]
-    Stage2 --> Stage3["Stage 3: MBConvCBAM (Expansion x6, 5x5)"]
-    Stage3 --> Stage4["Stage 4: MBConvCBAM (Expansion x6, 5x5, DropPath)"]
-    Stage4 --> Stage5["Stage 5: 2D Transformer Block (MHSA, 8 Heads)"]
-    Stage5 --> Head["Pre-Classifier Projection (1536 Channels)"]
-    Head --> GAP["Global Average Pooling"]
-    GAP --> Classifier["Linear Layer + Dropout (0.3)"]
-    Classifier --> Output["Sigmoid Output"]
+    Input["Input (Progressive: 160x160 to 288x288 RGB)"] --> Stem["Stem Conv (3x3, Stride=2, 3 to 40 channels)"]
+    
+    subgraph CNN_Backbone ["Fused & Standard MBConv Attention Stages"]
+        Stem --> Stage1["Stage 1: Fused-MBConv Block (no Expansion, 3x3, 40 to 40 channels, Stride=1, Repeats=2)"]
+        Stage1 --> Stage2["Stage 2: Fused-MBConv Block (Expansion x4, 3x3, 40 to 80 channels, Stride=2, Repeats=3)"]
+        Stage2 --> Stage3["Stage 3: Fused-MBConv Block (Expansion x4, 3x3, 80 to 160 channels, Stride=2, Repeats=5)"]
+        Stage3 --> Stage4["Stage 4: Standard MBConv Block (Expansion x4, 5x5, 160 to 320 channels, Stride=2, Repeats=6)"]
+        Stage4 --> Stage5["Stage 5: Standard MBConv Block (Expansion x6, 5x5, 320 to 480 channels, Stride=2, Repeats=3)"]
+    end
+    
+    subgraph Attention_Classification ["Deep Self-Attention & Classifier Head"]
+        Stage5 --> Transformer["2D Transformer Block (Pre-LN MHSA, 8 Heads, 480 channels)"]
+        Transformer --> Projection["Pre-Classifier Projection (1x1 Conv, 480 to 1536 channels)"]
+        Projection --> GAP["Global Average Pooling (1536 channels)"]
+        GAP --> Classifier["Linear Classifier Layer (Dropout 0.3, 1536 to 1 Logit)"]
+        Classifier --> Output["Output Probabilities (Sigmoid Activation)"]
+    end
+
+    style CNN_Backbone fill:#111522,stroke:#2a3a5c,stroke-width:2px;
+    style Attention_Classification fill:#1f1122,stroke:#512a5c,stroke-width:2px;
 ```
 
 ### Key Architectural Innovation: Dual Attention (CBAM)
