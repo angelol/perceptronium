@@ -35,8 +35,8 @@ $$
 \mathbf{F}'' = \mathbf{M}_s(\mathbf{F}') \otimes \mathbf{F}'
 $$
 
-1. **Channel Attention ($\mathbf{M}_c$):** Uses both global average pooling and global max pooling, passing results through a shared multi-layer perceptron (MLP) to determine channel-wise importance.
-2. **Spatial Attention ($\mathbf{M}_s$):** Pools channel dimensions (average and max) to form a 2-channel spatial map, convolving it with a $7 \times 7$ kernel to emphasize *where* the animal's features (e.g., eyes, whiskers, ears) are located.
+1. **Channel Attention (*M_c*):** Uses both global average pooling and global max pooling, passing results through a shared multi-layer perceptron (MLP) to determine channel-wise importance.
+2. **Spatial Attention (*M_s*):** Pools channel dimensions (average and max) to form a 2-channel spatial map, convolving it with a 7x7 kernel to emphasize *where* the animal's features (e.g., eyes, whiskers, ears) are located.
 
 ---
 
@@ -44,11 +44,11 @@ $$
 
 To prevent overfitting when training a large 24M-parameter network on a modest scratch dataset (8,000 train images, 2,000 validation images), we integrate highly sophisticated regularization components:
 
-* **Progressive Resizing Curriculum:** Accelerates early training and captures multiscale features. Epochs 1-60 use $160 \times 160$ resolution; Epochs 61-130 scale to $224 \times 224$; Epochs 131-200 finalize at $288 \times 288$.
+* **Progressive Resizing Curriculum:** Accelerates early training and captures multiscale features. Epochs 1-60 use 160x160 resolution; Epochs 61-130 scale to 224x224; Epochs 131-200 finalize at 288x288.
 * **TrivialAugmentWide & DropPath:** Applies high-diversity data transformations on inputs, combined with Stochastic Depth (linearly decaying block drop probability) to regularize deep pathways.
-* **Mixup & CutMix Cooldown:** Randomly interpolates images and labels during active phases ($\alpha=0.2$ and $\alpha=1.0$). We completely disable Mixup/CutMix in the final 20 epochs (the "cooldown" phase) to let the network sharpen decision boundaries.
-* **Lookahead-AdamW Optimizer:** Wraps `AdamW` with a Lookahead tracker ($k=5, \alpha=0.5$) that maintains a set of "slow weights" to escape suboptimal local minima and smooth loss trajectories.
-* **Post-Hoc Calibration (Temperature Scaling):** Corrects model overconfidence by optimizing a temperature parameter $T$ on the validation set using L-BFGS, minimizing Expected Calibration Error (ECE):
+* **Mixup & CutMix Cooldown:** Randomly interpolates images and labels during active phases (&alpha; = 0.2 and &alpha; = 1.0). We completely disable Mixup/CutMix in the final 20 epochs (the "cooldown" phase) to let the network sharpen decision boundaries.
+* **Lookahead-AdamW Optimizer:** Wraps `AdamW` with a Lookahead tracker (*k* = 5, &alpha; = 0.5) that maintains a set of "slow weights" to escape suboptimal local minima and smooth loss trajectories.
+* **Post-Hoc Calibration (Temperature Scaling):** Corrects model overconfidence by optimizing a temperature parameter *T* on the validation set using L-BFGS, minimizing Expected Calibration Error (ECE):
 
 $$
 \hat{p}_i = \sigma\left(\frac{z_i}{T}\right) \quad \text{with } T = 1.409243

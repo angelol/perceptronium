@@ -27,7 +27,7 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 ### Run 11: CBAM-EfficientNet v4 (Ultra Hybrid - GCP Run 11)
 * **Date:** June 23, 2026
 * **Hardware Device:** GCP Spot VM (1x NVIDIA L4 GPU with CUDA)
-* **Input Resolution:** Progressive Resizing (Epochs 1-60: $160 \times 160$ RGB, Epochs 61-130: $224 \times 224$ RGB, Epochs 131-200: $288 \times 288$ RGB)
+* **Input Resolution:** Progressive Resizing (Epochs 1-60: 160x160 RGB, Epochs 61-130: 224x224 RGB, Epochs 131-200: 288x288 RGB)
 * **Architecture Highlights:**
   - **CBAM-EfficientNet v4 (Ultra Hybrid)** architecture (~24.31M parameters) trained completely from scratch.
   - Multi-block stage repetitions with SE attention.
@@ -76,7 +76,7 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
   - **Augmentation curriculum:** `TrivialAugmentWide` + cutout-like `RandomErasing(p=0.2)`. Progressive resizing context / Wider crop scale `(0.2, 1.0)`.
   - **Mixup & CutMix Cooldown:** Enabled Mixup/CutMix with warmup (Epochs 1-2 disabled) and active phase (Epochs 3-40 enabled). Cooldown phase (Epochs 41-45 completely disabled Mixup/CutMix) to let the model sharpen its decision boundaries.
   - **Decoupled Label Smoothing:** $\epsilon = 0.05$ only on clean batches; mixed batches used raw mixed-target ratio.
-  - **Calibration Scaling:** Post-hoc calibration using L-BFGS temperature scaling on the validation split, finding optimal $T = 0.8088$ and lowering ECE from $4.38\%$ to $2.88\%$.
+  - **Calibration Scaling:** Post-hoc calibration using L-BFGS temperature scaling on the validation split, finding optimal *T* = 0.8088 and lowering ECE from 4.38% to 2.88%.
 * **Best Test Accuracy:** **`93.30%`** (Epoch 38, Peak with TTA)
 * **SWA Test Accuracy:** **`92.35%`** (with TTA, after SWA BN stabilization, SWA Test Loss: `0.2599`)
 * **Overfitting / Generalization Analysis:**
@@ -86,7 +86,7 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 ### Run 5: CBAM-EfficientNet (Option C)
 * **Date:** June 20, 2026
 * **Hardware Device:** Metal GPU (MPS)
-* **Input Resolution:** $224 \times 224$ RGB (3 channels)
+* **Input Resolution:** 224x224 RGB (3 channels)
 * **Architecture Highlights:**
   * Stem convolution followed by 4 `MBConvCBAM` inverted bottleneck stages with depthwise separable convolutions (factorizing spatial/channel calculations).
   * Dual-attention mechanisms: **Channel Attention** (global average and max spatial pooling through shared MLPs) and **Spatial Attention** ($7 \times 7$ filters over spatial pooling dimensions).
@@ -114,7 +114,7 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 ### Run 4: Custom Residual CNN (Option A+)
 * **Date:** June 20, 2026
 * **Hardware Device:** Metal GPU (MPS)
-* **Input Resolution:** $224 \times 224$ RGB (3 channels)
+* **Input Resolution:** 224x224 RGB (3 channels)
 * **Architecture Highlights:**
   * 19-layer network stacking 4 stages of dual-conv `ResidualBlock` structures. 
   * Skip-connections feeding identity projections directly to outputs to resolve gradient vanishing.
@@ -132,7 +132,7 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 ### Run 3: PyTorch Custom CNN (Option A)
 * **Date:** June 20, 2026
 * **Hardware Device:** Metal GPU (MPS)
-* **Input Resolution:** $224 \times 224$ RGB (3 channels)
+* **Input Resolution:** 224x224 RGB (3 channels)
 * **Architecture Highlights:**
   * Feedforward 11-layer architecture stacking 4 Conv blocks with interleaved BatchNorm, ReLU, and Max Pooling.
   * Spatial dimension collapsed from $256 \times 14 \times 14$ to $256 \times 1 \times 1$ via `AdaptiveAvgPool2d` to prevent classifier parameter explosion.
@@ -150,7 +150,7 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 ### Run 2: Rust CPU Convolutional Neural Network
 * **Date:** June 20, 2026
 * **Hardware Device:** CPU (Single-threaded)
-* **Input Resolution:** $128 \times 128$ Grayscale
+* **Input Resolution:** 128x128 Grayscale
 * **Architecture Highlights:**
   * Fully from-scratch neural engine in pure Rust with zero external libraries.
   * 2 Conv layers ($3 \times 3$ kernels), 2 Max Pooling layers ($2 \times 2$), flatten, ReLU hidden dense layer ($64$ nodes), and Sigmoid binary classifier.
@@ -168,7 +168,7 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 ### Run 1: Rust CPU Multi-Layer Perceptron (MLP)
 * **Date:** June 19, 2026
 * **Hardware Device:** CPU (Single-threaded)
-* **Input Resolution:** $64 \times 64$ Grayscale
+* **Input Resolution:** 64x64 Grayscale
 * **Architecture Highlights:**
   * Fully from-scratch fully connected feedforward network.
   * Sigmoid activations and basic SGD backpropagation.
@@ -182,7 +182,7 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 ### Run 7: CBAM-EfficientNet v3 (ASAM - Failed Run)
 * **Date:** June 21, 2026
 * **Hardware Device:** Metal GPU (MPS)
-* **Input Resolution:** $224 \times 224$ RGB
+* **Input Resolution:** 224x224 RGB
 * **Architecture Highlights:**
   * Custom CBAM-EfficientNet v3 (~13.88M parameters) combining fused early stages and late standard stage.
   * Incorporates 2D Multi-Head Self-Attention (MHSA) at the deep feature extraction layer.
@@ -200,7 +200,7 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 ### Run 8: CBAM-EfficientNet v3 (Lookahead-AdamW)
 * **Date:** June 21, 2026
 * **Hardware Device:** Metal GPU (MPS)
-* **Input Resolution:** $224 \times 224$ RGB (Progressive Resizing curriculum: 15 epochs at $128 \times 128$, 15 epochs at $192 \times 192$, and 15 epochs at $224 \times 224$)
+* **Input Resolution:** 224x224 RGB (Progressive Resizing curriculum: 15 epochs at 128x128, 15 epochs at 192x192, and 15 epochs at 224x224)
 * **Architecture Highlights:**
   * Custom CBAM-EfficientNet v3 (~13.88M parameters) combining fused early stages, late standard stage, and a 2D Multi-Head Self-Attention layer.
 * **Hyperparameters & Regularization:**
@@ -219,7 +219,7 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 ### Run 9: CBAM-EfficientNet v3 (Local MPS Run)
 * **Date:** June 21, 2026
 * **Hardware Device:** Metal GPU (MPS)
-* **Input Resolution:** $224 \times 224$ RGB
+* **Input Resolution:** 224x224 RGB
 * **Architecture Highlights:**
   - Upgraded custom CBAM-EfficientNet v3 (~13.88M parameters) combining fused early stages, late standard stage, and a 2D Multi-Head Self-Attention layer.
 * **Hyperparameters & Regularization:**
@@ -236,7 +236,7 @@ This log tracks our model architectures, training runs, hyperparameter choices, 
 ### Run 10: CBAM-EfficientNet v3 (GCP Spot VM Run)
 * **Date:** June 21, 2026
 * **Hardware Device:** GCP Spot VM (1x NVIDIA L4 GPU with CUDA)
-* **Input Resolution:** $224 \times 224$ RGB (Full resolution training)
+* **Input Resolution:** 224x224 RGB (Full resolution training)
 * **Architecture Highlights:**
   - Upgraded custom CBAM-EfficientNet v3 (~13.88M parameters) combining fused early stages, late standard stage, and a 2D Multi-Head Self-Attention layer.
 * **Hyperparameters & Regularization:**

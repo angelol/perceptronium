@@ -85,11 +85,11 @@ Open **[http://127.0.0.1:8080](http://127.0.0.1:8080)** in your browser!
 
 | Model | Hardware | Input Size | Params | Val Acc | Test Acc | Regularizations |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Rust MLP Baseline** | CPU (Single-thread) | $64 \times 64$ Gray | ~131K | $50.00\%$ | $50.00\%$ | None |
-| **Rust CNN Baseline** | CPU (Single-thread) | $128 \times 128$ Gray | ~924K | $68.35\%$ | $66.90\%$ | L2 Weight Decay |
-| **Custom Residual** | Metal GPU (MPS) | $224 \times 224$ RGB | ~4.91M | $87.60\%$ | $87.60\%$ | Dropout, Weight Decay |
-| **CBAM-EfficientNet v2**| Metal GPU (MPS) | $224 \times 224$ RGB | ~8.69M | $93.30\%$ | $92.35\%$ (SWA) | SWA, Mixup, CutMix, Calibration |
-| **CBAM-EfficientNet v4**| GCP L4 GPU (CUDA) | $288 \times 288$ RGB | ~24.31M| **`98.96%`** | **`98.63%`** (SWA) | Transformer Stage, Progressive Resizing, TTA |
+| **Rust MLP Baseline** | CPU (Single-thread) | 64x64 Gray | ~131K | 50.00% | 50.00% | None |
+| **Rust CNN Baseline** | CPU (Single-thread) | 128x128 Gray | ~924K | 68.35% | 66.90% | L2 Weight Decay |
+| **Custom Residual** | Metal GPU (MPS) | 224x224 RGB | ~4.91M | 87.60% | 87.60% | Dropout, Weight Decay |
+| **CBAM-EfficientNet v2**| Metal GPU (MPS) | 224x224 RGB | ~8.69M | 93.30% | 92.35% (SWA) | SWA, Mixup, CutMix, Calibration |
+| **CBAM-EfficientNet v4**| GCP L4 GPU (CUDA) | 288x288 RGB | ~24.31M| **98.96%** | **98.63%** (SWA) | Transformer Stage, Progressive Resizing, TTA |
 
 ---
 

@@ -26,34 +26,34 @@ graph TD
 
 ### 1. Mathematical Forward Pass
 
-* **Input Image:** Standardized grayscale tensor $\mathbf{X}$ of dimension $128 \times 128$ pixels.
-* **Conv Layer 1:** Convolves the single-channel input using $8$ filters of size $3 \times 3$ with stride $1$ and no padding:
+* **Input Image:** Standardized grayscale tensor *X* of dimension 128x128 pixels.
+* **Conv Layer 1:** Convolves the single-channel input using 8 filters of size 3x3 with stride 1 and no padding:
 
 $$
 \mathbf{H}^{(1)}_{f} = \text{ReLU}\left(\mathbf{X} * \mathbf{K}^{(1)}_{f} + b^{(1)}_{f}\right) \quad \forall f \in [1, 8]
 $$
 
-This outputs $8$ feature maps of dimension $126 \times 126$.
+This outputs 8 feature maps of dimension 126x126.
 
-* **Max Pooling 1:** Downscales the spatial resolution using a $2 \times 2$ window with stride $2$:
+* **Max Pooling 1:** Downscales the spatial resolution using a 2x2 window with stride 2:
 
 $$
 \mathbf{P}^{(1)}_{f}(i,j) = \max \left( \mathbf{H}^{(1)}_{f}(2i:2i+2, \, 2j:2j+2) \right)
 $$
 
-Tracks and caches the exact argmax indices $(r, c)$ inside each pooling window to feed precise gradients backward. This outputs $8$ maps of dimension $63 \times 63$.
+Tracks and caches the exact argmax indices *(r, c)* inside each pooling window to feed precise gradients backward. This outputs 8 maps of dimension 63x63.
 
-* **Conv Layer 2:** Convolves the 8-channel pooled feature maps using $16$ filters of dimension $3 \times 3 \times 8$:
+* **Conv Layer 2:** Convolves the 8-channel pooled feature maps using 16 filters of dimension 3x3x8:
 
 $$
 \mathbf{H}^{(2)}_{g} = \text{ReLU}\left( \sum_{f=1}^{8} \mathbf{P}^{(1)}_{f} * \mathbf{K}^{(2)}_{g, f} + b^{(2)}_{g} \right) \quad \forall g \in [1, 16]
 $$
 
-This outputs $16$ feature maps of dimension $61 \times 61$.
+This outputs 16 feature maps of dimension 61x61.
 
-* **Max Pooling 2:** Downscales using another $2 \times 2$ window with stride $2$, outputting $16$ maps of size $30 \times 30$ ($14,400$ flattened elements).
+* **Max Pooling 2:** Downscales using another 2x2 window with stride 2, outputting 16 maps of size 30x30 (14,400 flattened elements).
 
-* **Dense Hidden Layer:** Fully connected feedforward layer mapping the flattened spatial features ($14,400$) to $64$ hidden units:
+* **Dense Hidden Layer:** Fully connected feedforward layer mapping the flattened spatial features (14,400) to 64 hidden units:
 
 $$
 \mathbf{z}_d = \mathbf{W}_d \cdot \text{flatten}(\mathbf{P}^{(2)}) + \mathbf{b}_d
@@ -85,13 +85,13 @@ $$
 \mathcal{L} = - [y \ln(p) + (1 - y) \ln(1 - p)]
 $$
 
-2. **Output Error ($\delta_o$):**
+2. **Output Error (*&delta;_o*):**
 
 $$
 \delta_o = \frac{\partial \mathcal{L}}{\partial z_o} = p - y
 $$
 
-3. **Dense Hidden Layer Error ($\boldsymbol{\delta}_d$):**
+3. **Dense Hidden Layer Error (*&delta;_d*):**
 
 $$
 \boldsymbol{\delta}_d = \left( \mathbf{w}_o \cdot \delta_o \right) \odot \text{ReLU}'(\mathbf{z}_d)
@@ -101,7 +101,7 @@ $$
 \text{where } \text{ReLU}'(x) = \begin{cases} 1 & \text{if } x > 0 \\ 0 & \text{if } x \le 0 \end{cases}
 $$
 
-4. **Flattened Feature Error ($\boldsymbol{\delta}_f$):**
+4. **Flattened Feature Error (*&delta;_f*):**
 
 $$
 \boldsymbol{\delta}_f = \mathbf{W}_d^T \cdot \boldsymbol{\delta}_d
@@ -113,7 +113,7 @@ $$
 \frac{\partial \mathcal{L}}{\partial \mathbf{K}^{(2)}_{g, f}} = \mathbf{P}^{(1)}_{f} * \boldsymbol{\delta}^{(2)}_{g}
 $$
 
-6. **L2 Regularization (Weight Decay):** To mitigate overfitting, we apply L2 regularization ($\lambda = 0.001$) to the dense weights during SGD updates:
+6. **L2 Regularization (Weight Decay):** To mitigate overfitting, we apply L2 regularization (*&lambda;* = 0.001) to the dense weights during SGD updates:
 
 $$
 \mathbf{W}_d \leftarrow \mathbf{W}_d - \eta \left( \frac{\partial \mathcal{L}}{\partial \mathbf{W}_d} + \lambda \mathbf{W}_d \right)

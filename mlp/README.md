@@ -9,7 +9,7 @@ The only dependency used is the standard Rust `image` crate, solely for loading 
 ## Features
 
 - **No ML Frameworks:** Pure Rust mathematical calculations for all linear algebra and neural network layers.
-- **Grayscale Resizing Pipeline:** Standardizes arbitrary input images into normalized $64 \times 64$ float arrays ($4,096$ flat features in range `[0.0, 1.0]`) using fast `thumbnail_exact` downsampling.
+- **Grayscale Resizing Pipeline:** Standardizes arbitrary input images into normalized 64x64 float arrays (4,096 flat features in range `[0.0, 1.0]`) using fast `thumbnail_exact` downsampling.
 - **Terminal ASCII Art Previews:** Renders downscaled image previews directly inside the console as detailed, recognizable ASCII characters.
 - **Deterministic Training Reproducibility:** Uses a custom-written Linear Congruential Generator (LCG) for deterministic weight initializations and training dataset shuffles.
 - **Mathematical Transparency:** Clean, educational code documentations with mathematical derivations of backpropagation gradients (Binary Cross-Entropy Loss + Sigmoid pre-activation derivative simplifies analytically to $p - y$).
@@ -33,20 +33,20 @@ $$
 $$
 
 ### 2. Binary Cross-Entropy (BCE) Loss
-Used to measure classification performance for binary labels ($0.0 = \text{Cat}$, $1.0 = \text{Dog}$):
+Used to measure classification performance for binary labels (0.0 = Cat, 1.0 = Dog):
 
 $$
 \mathcal{L} = - [y \ln(p) + (1 - y) \ln(1 - p)]
 $$
 
 ### 3. Backpropagation Simplification
-When using BCE loss coupled with a Sigmoid output activation, the partial derivative of the loss function with respect to the output pre-activation ($z_o$) simplifies analytically to:
+When using BCE loss coupled with a Sigmoid output activation, the partial derivative of the loss function with respect to the output pre-activation (*z_o*) simplifies analytically to:
 
 $$
 \frac{\partial \mathcal{L}}{\partial z_o} = p - y
 $$
 
-*(Where $p$ is the prediction score and $y$ is the target label, ensuring numerical stability and avoiding division-by-zero errors during training).*
+*(Where *p* is the prediction score and *y* is the target label, ensuring numerical stability and avoiding division-by-zero errors during training).*
 
 ---
 
@@ -111,7 +111,7 @@ Enter image path (or type 'q' to quit):
 ```
 
 Provide the path to any pet picture on your machine (e.g. `/Users/yourname/Desktop/my_dog.png`), and press **Enter**. The program will:
-1. Load, convert, and downscale the image to $64 \times 64$ pixels.
+1. Load, convert, and downscale the image to 64x64 pixels.
 2. Render a stunning ASCII preview of the resized image in the terminal.
 3. Compute predictions instantly using the loaded parameters and print confidence scores.
 
