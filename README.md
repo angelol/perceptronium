@@ -83,12 +83,12 @@ Open **[http://127.0.0.1:8080](http://127.0.0.1:8080)** in your browser!
 
 ## 🔬 Performance Comparison
 
-| Model | Hardware | Input Size | Params | Acc | Regularizations |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Rust MLP** | CPU (Single-thread) | $64 \times 64$ Gray | ~131K | $50.00\%$ | None |
-| **Rust CNN** | CPU (Single-thread) | $128 \times 128$ Gray | ~924K | $68.35\%$ | L2 Weight Decay |
-| **Custom Residual** | Metal GPU (MPS) | $224 \times 224$ RGB | ~4.91M | $87.60\%$ | Dropout, Weight Decay |
-| **CBAM-EfficientNet v2**| Metal GPU (MPS) | $224 \times 224$ RGB | ~8.68M | **`93.30%`**| SWA, Mixup, CutMix, Calibration |
+| Model | Hardware | Input Size | Params | Val Acc | Test Acc | Regularizations |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Rust MLP** | CPU (Single-thread) | $64 \times 64$ Gray | ~131K | $50.00\%$ | $50.00\%$ | None |
+| **Rust CNN** | CPU (Single-thread) | $128 \times 128$ Gray | ~924K | $68.35\%$ | $66.90\%$ | L2 Weight Decay |
+| **Custom Residual** | Metal GPU (MPS) | $224 \times 224$ RGB | ~4.91M | $87.60\%$ | $87.60\%$ | Dropout, Weight Decay |
+| **CBAM-EfficientNet v2**| Metal GPU (MPS) | $224 \times 224$ RGB | ~8.68M | **`93.30%`** | **`92.35%`** (SWA) | SWA, Mixup, CutMix, Calibration |
 
 ---
 
